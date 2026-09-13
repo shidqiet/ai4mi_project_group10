@@ -77,7 +77,7 @@ def gt_transform(K, img):
         img = class2one_hot(img, K=K)
         return img[0]
 
-def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
+def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Any | None]:
     # Networks and scheduler
     gpu: bool = args.gpu and torch.cuda.is_available()
     device = torch.device("cuda") if gpu else torch.device("cpu")
@@ -90,8 +90,28 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     net.init_weights()
     net.to(device)
 
-    lr = 0.0005
-    optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
+    default_lrs = {'adam': 0.0005, 'adamw': 0.0005, 'sgd_nesterov': 0.01}
+    lr = args.lr if args.lr is not None else default_lrs[args.optimizer]
+
+    match args.optimizer:
+        case 'adam':
+            optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999),
+                                         weight_decay=args.weight_decay)
+        case 'adamw':
+            optimizer = torch.optim.AdamW(net.parameters(), lr=lr, betas=(0.9, 0.999),
+                                          weight_decay=args.weight_decay)
+        case 'sgd_nesterov':
+            optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9, nesterov=True,
+                                        weight_decay=args.weight_decay)
+        case _:
+            raise ValueError(f"Unsupported optimizer: {args.optimizer}")
+
+    scheduler = None
+    if args.lr_scheduler == 'polynomial':
+        def polynomial_decay(completed_epochs: int) -> float:
+            return max(0.0, 1 - completed_epochs / args.epochs) ** 0.9
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=polynomial_decay)
 
     # Dataset part
     B: int = datasets_params[args.dataset]['B']
@@ -121,12 +141,12 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     args.dest.mkdir(parents=True, exist_ok=True)
 
-    return (net, optimizer, device, train_loader, val_loader, K)
+    return (net, optimizer, device, train_loader, val_loader, K, scheduler)
 
 
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
-    net, optimizer, device, train_loader, val_loader, K = setup(args)
+    net, optimizer, device, train_loader, val_loader, K, scheduler = setup(args)
 
     if args.mode == "full":
         loss_fn = CrossEntropy(idk=list(range(K)))  # Supervise both background and foreground
@@ -231,6 +251,9 @@ def runTraining(args):
             torch.save(net, args.dest / "bestmodel.pkl")
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
 
+        if scheduler is not None:
+            scheduler.step()
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -238,6 +261,15 @@ def main():
     parser.add_argument('--epochs', default=20, type=int)
     parser.add_argument('--dataset', default='TOY2', choices=datasets_params.keys())
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
+    parser.add_argument('--optimizer', default='adam',
+                        choices=['adam', 'adamw', 'sgd_nesterov'],
+                        help='Optimizer to use. The default reproduces the original Adam baseline.')
+    parser.add_argument('--lr', type=float, default=None,
+                        help='Learning rate. Uses the optimizer-specific default when omitted.')
+    parser.add_argument('--weight-decay', type=float, default=0.0,
+                        help='Weight decay coefficient. Defaults to 0.0, preserving the baseline.')
+    parser.add_argument('--lr-scheduler', default='none', choices=['none', 'polynomial'],
+                        help='Learning-rate schedule. The default keeps the learning rate fixed.')
     parser.add_argument('--dest', type=Path, required=True,
                         help="Destination directory to save the results (predictions and weights).")
 
@@ -247,6 +279,11 @@ def main():
                              "to test the logics around epochs and logging easily.")
 
     args = parser.parse_args()
+
+    if args.lr is not None and args.lr <= 0:
+        parser.error('--lr must be positive')
+    if args.weight_decay < 0:
+        parser.error('--weight-decay must be non-negative')
 
     pprint(args)
 
