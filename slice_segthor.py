@@ -33,12 +33,34 @@ from typing import Callable
 
 import numpy as np
 import nibabel as nib
+from scipy.ndimage import zoom
 from skimage.io import imsave
 from skimage.transform import resize
 
 from utils import map_, tqdm_
 
-def compute_norm_stats(src_path: Path, training_ids: list[str]) -> tuple[float, float]:
+
+def compute_target_spacing(
+    src_path: Path, training_ids: list[str]
+) -> tuple[float, float, float]:
+    """
+    Compute median spacing (training set only)
+    """
+    spacings = []
+    for id_ in training_ids:
+        ct_path = src_path / "train" / id_ / f"{id_}.nii.gz"
+        nib_obj = nib.load(str(ct_path))
+        dx, dy, dz = nib_obj.header.get_zooms()
+        spacings.append((dx, dy, dz))
+
+    spacings = np.asarray(spacings)
+    median_spacing = tuple(np.median(spacings, axis=0).tolist())
+
+    return median_spacing
+
+def compute_norm_stats(
+    src_path: Path, training_ids: list[str]
+) -> tuple[float, float]:
     """
     Compute percentile clip range from foreground voxels (training set only)
     """
@@ -55,6 +77,19 @@ def compute_norm_stats(src_path: Path, training_ids: list[str]) -> tuple[float, 
     fg_p_low, fg_p_high = np.percentile(fg_values, [0.5, 99.5])
 
     return fg_p_low, fg_p_high
+
+def resample_arr(
+    img: np.ndarray, 
+    original_spacing: tuple[float, float, float], 
+    target_spacing: tuple[float, float, float],
+    order: int,
+) -> np.ndarray:
+    """
+    Resample the data to the target spacing
+    """
+    zoom_factors = [c / t for c, t in zip(original_spacing, target_spacing)]
+    resampled = zoom(img, zoom_factors, order=order)
+    return resampled
 
 def norm_arr(
     img: np.ndarray, norm_stats: tuple[float, float]
@@ -113,6 +148,7 @@ def slice_patient(
     source_path: Path,
     shape: tuple[int, int],
     norm_stats: tuple[float, float],
+    target_spacing: tuple[float, float, float],
     test_mode: bool = False,
 ) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
@@ -121,8 +157,7 @@ def slice_patient(
     nib_obj = nib.load(str(ct_path))
     ct: np.ndarray = np.asarray(nib_obj.dataobj)
     # dx, dy, dz = nib_obj.header.get_zooms()
-    x, y, z = ct.shape
-    dx, dy, dz = nib_obj.header.get_zooms()
+    # dx, dy, dz = nib_obj.header.get_zooms()
 
     assert sanity_ct(ct, *ct.shape, *nib_obj.header.get_zooms())
 
@@ -136,6 +171,11 @@ def slice_patient(
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
 
+    ct, gt = (
+        resample_arr(ct, nib_obj.header.get_zooms(), target_spacing, order=3), # cubic interpolation
+        resample_arr(gt, nib_obj.header.get_zooms(), target_spacing, order=0) # nearest neighbor interpolation
+    ) # both use nib_obj since ct and gt have same spacing. 
+    x, y, z = ct.shape
     norm_ct: np.ndarray = norm_arr(ct, norm_stats)
 
     to_slice_ct = norm_ct
@@ -165,7 +205,7 @@ def slice_patient(
                 warnings.filterwarnings("ignore", category=UserWarning)
                 imsave(str(save_path / filename), data)
 
-    return dx, dy, dz
+    return target_spacing
 
 
 def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list[str], list[str]]:
@@ -203,6 +243,7 @@ def main(args: argparse.Namespace):
     training_ids, validation_ids, test_ids = get_splits(src_path, args.retains, args.fold)
 
     norm_stats = compute_norm_stats(src_path, training_ids) # only use training ids
+    target_spacing = compute_target_spacing(src_path, training_ids) # only use training ids
 
     resolution_dict: dict[str, tuple[float, float, float]] = {}
 
@@ -216,6 +257,7 @@ def main(args: argparse.Namespace):
                                  source_path=src_path,
                                  shape=tuple(args.shape),
                                  norm_stats=norm_stats,
+                                 target_spacing=target_spacing,
                                  test_mode=mode == 'test')
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
