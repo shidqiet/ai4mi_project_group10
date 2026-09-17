@@ -38,10 +38,37 @@ from skimage.transform import resize
 
 from utils import map_, tqdm_
 
+def compute_norm_stats(src_path: Path, training_ids: list[str]) -> tuple[float, float]:
+    """
+    Compute percentile clip range from foreground voxels (training set only)
+    """
+    fg_values = []
+    for id_ in training_ids:
+        ct_path = src_path / "train" / id_ / f"{id_}.nii.gz"
+        gt_path = src_path / "train" / id_ / "GT.nii.gz"
 
-def norm_arr(img: np.ndarray) -> np.ndarray:
+        ct = np.asarray(nib.load(str(ct_path)).dataobj)
+        gt = np.asarray(nib.load(str(gt_path)).dataobj)
+        fg_values.append(ct[gt > 0])
+
+    fg_values = np.concatenate(fg_values)
+    fg_p_low, fg_p_high = np.percentile(fg_values, [0.5, 99.5])
+
+    return fg_p_low, fg_p_high
+
+def norm_arr(
+    img: np.ndarray, norm_stats: tuple[float, float]
+) -> np.ndarray:
+    """
+    Clip voxels values to the foreground percentile range
+    and normalize to [0, 255]
+    """
     casted = img.astype(np.float32)
-    shifted = casted - casted.min()
+
+    fg_p_low, fg_p_high = norm_stats
+    clipped = np.clip(casted, fg_p_low, fg_p_high)
+
+    shifted = clipped - clipped.min()
     norm = shifted / shifted.max()
     res = 255 * norm
 
@@ -80,8 +107,14 @@ def sanity_gt(gt, ct) -> bool:
 resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_aliasing=False)
 
 
-def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
-                  test_mode: bool = False) -> tuple[float, float, float]:
+def slice_patient(
+    id_: str,
+    dest_path: Path,
+    source_path: Path,
+    shape: tuple[int, int],
+    norm_stats: tuple[float, float],
+    test_mode: bool = False,
+) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
@@ -103,7 +136,7 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
 
-    norm_ct: np.ndarray = norm_arr(ct)
+    norm_ct: np.ndarray = norm_arr(ct, norm_stats)
 
     to_slice_ct = norm_ct
     to_slice_gt = gt
@@ -169,6 +202,8 @@ def main(args: argparse.Namespace):
     test_ids: list[str]
     training_ids, validation_ids, test_ids = get_splits(src_path, args.retains, args.fold)
 
+    norm_stats = compute_norm_stats(src_path, training_ids) # only use training ids
+
     resolution_dict: dict[str, tuple[float, float, float]] = {}
 
     split_ids: list[str]
@@ -180,6 +215,7 @@ def main(args: argparse.Namespace):
                                  dest_path=dest_mode,
                                  source_path=src_path,
                                  shape=tuple(args.shape),
+                                 norm_stats=norm_stats,
                                  test_mode=mode == 'test')
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
