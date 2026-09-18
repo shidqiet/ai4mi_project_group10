@@ -218,7 +218,7 @@ def slice_patient(
                 warnings.filterwarnings("ignore", category=UserWarning)
                 imsave(str(save_path / filename), data)
 
-    return target_spacing
+    return nib_obj.header.get_zooms()
 
 
 def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list[str], list[str]]:
