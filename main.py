@@ -28,7 +28,7 @@ from typing import Any
 from pathlib import Path
 from pprint import pprint
 from operator import itemgetter
-from shutil import copytree, rmtree
+from shutil import copytree
 
 import torch
 import numpy as np
@@ -42,6 +42,7 @@ from functools import partial
 from dataset import SliceDataset
 from ShallowNet import shallowCNN
 from ENet import ENet
+from SwinUNet import SwinUNet
 from utils import (Dcm,
                    class2one_hot,
                    probs2one_hot,
@@ -86,9 +87,18 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Any |
     K: int = datasets_params[args.dataset]['K']
     kernels: int = datasets_params[args.dataset]['kernels'] if 'kernels' in datasets_params[args.dataset] else 8
     factor: int = datasets_params[args.dataset]['factor'] if 'factor' in datasets_params[args.dataset] else 2
-    net = datasets_params[args.dataset]['net'](1, K, kernels=kernels, factor=factor)
+    match args.architecture:
+        case 'baseline':
+            net = datasets_params[args.dataset]['net'](1, K, kernels=kernels, factor=factor)
+        case 'enet':
+            net = ENet(1, K, kernels=kernels, factor=factor)
+        case 'swin_unet':
+            net = SwinUNet(1, K)
+        case _:
+            raise ValueError(f"Unsupported architecture: {args.architecture}")
     net.init_weights()
     net.to(device)
+    print(f">> Model has {sum(parameter.numel() for parameter in net.parameters()):,} trainable parameters")
 
     default_lrs = {'adam': 0.0005, 'adamw': 0.0005, 'sgd_nesterov': 0.01}
     lr = args.lr if args.lr is not None else default_lrs[args.optimizer]
@@ -244,9 +254,7 @@ def runTraining(args):
                 f.write(message)
 
             best_folder = args.dest / "best_epoch"
-            if best_folder.exists():
-                rmtree(best_folder)
-            copytree(args.dest / f"iter{e:03d}", Path(best_folder))
+            copytree(args.dest / f"iter{e:03d}", Path(best_folder), dirs_exist_ok=True)
 
             torch.save(net, args.dest / "bestmodel.pkl")
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
@@ -261,6 +269,9 @@ def main():
     parser.add_argument('--epochs', default=20, type=int)
     parser.add_argument('--dataset', default='TOY2', choices=datasets_params.keys())
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
+    parser.add_argument('--architecture', default='baseline',
+                        choices=['baseline', 'enet', 'swin_unet'],
+                        help='Network architecture. The default preserves the dataset-specific baseline network.')
     parser.add_argument('--optimizer', default='adam',
                         choices=['adam', 'adamw', 'sgd_nesterov'],
                         help='Optimizer to use. The default reproduces the original Adam baseline.')
