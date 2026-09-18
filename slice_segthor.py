@@ -34,6 +34,7 @@ from typing import Callable
 import numpy as np
 import nibabel as nib
 from scipy.ndimage import zoom
+from skimage.exposure import equalize_adapthist
 from skimage.io import imsave
 from skimage.transform import resize
 
@@ -96,21 +97,32 @@ def norm_arr(
 ) -> np.ndarray:
     """
     Clip voxels values to the foreground percentile range
-    and normalize to [0, 255]
+    and normalize to [0, 1]
     """
     casted = img.astype(np.float32)
 
     fg_p_low, fg_p_high = norm_stats
     clipped = np.clip(casted, fg_p_low, fg_p_high)
 
-    shifted = clipped - clipped.min()
-    norm = shifted / shifted.max()
-    res = 255 * norm
+    norm = (
+        (clipped - fg_p_low) / (fg_p_high - fg_p_low)
+    ) # normalize by training data stats
 
-    assert 0 == res.min(), res.min()
-    assert res.max() == 255, res.max()
+    # NOTE: changed since the normalization is done by training data stats,
+    # so the min and max of the normalized image may not be exactly 0 and 1.
+    # assert 0 == norm.min(), norm.min()
+    # assert norm.max() == 1, norm.max()
+    assert 0 <= norm.min(), norm.min()
+    assert norm.max() <= 1, norm.max()
 
-    return res.astype(np.uint8)
+    return norm
+
+
+def clahe_arr(img: np.ndarray) -> np.ndarray:
+    """
+    3D CLAHE on the normalized [0, 1] image
+    """
+    return equalize_adapthist(img) # default, untuned
 
 
 def sanity_ct(ct, x, y, z, dx, dy, dz) -> bool:
@@ -177,8 +189,9 @@ def slice_patient(
     ) # both use nib_obj since ct and gt have same spacing. 
     x, y, z = ct.shape
     norm_ct: np.ndarray = norm_arr(ct, norm_stats)
+    clahe_ct: np.ndarray = clahe_arr(norm_ct)
 
-    to_slice_ct = norm_ct
+    to_slice_ct = (255 * clahe_ct).astype(np.uint8) # convert to uint8 for saving as png
     to_slice_gt = gt
 
     for idz in range(z):
