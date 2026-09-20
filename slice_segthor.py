@@ -289,6 +289,15 @@ def main(args: argparse.Namespace):
         pickle.dump(resolution_dict, f, pickle.HIGHEST_PROTOCOL)
         print(f"Saved spacing dictionnary to {f}")
 
+    # Save preprocessing stats for stitching later
+    stats = {
+        "norm_stats": {"p_low": float(norm_stats[0]), "p_high": float(norm_stats[1])},
+        "target_spacing": {"dx": float(target_spacing[0]), "dy": float(target_spacing[1]), "dz": float(target_spacing[2])},
+    }
+    with open(dest_path / "preprocess_stats.pkl", 'wb') as f:
+        pickle.dump(stats, f, pickle.HIGHEST_PROTOCOL)
+        print(f"Saved preprocessing stats to {f}")
+
 
 def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Slicing parameters')
