@@ -28,7 +28,7 @@ from typing import Any
 from pathlib import Path
 from pprint import pprint
 from operator import itemgetter
-from shutil import copytree, rmtree
+from shutil import copytree
 
 import torch
 import numpy as np
@@ -42,6 +42,7 @@ from functools import partial
 from dataset import SliceDataset
 from ShallowNet import shallowCNN
 from ENet import ENet
+from SwinUNet import SwinUNet
 from utils import (Dcm,
                    class2one_hot,
                    probs2one_hot,
@@ -77,7 +78,7 @@ def gt_transform(K, img):
         img = class2one_hot(img, K=K)
         return img[0]
 
-def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
+def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Any | None]:
     # Networks and scheduler
     gpu: bool = args.gpu and torch.cuda.is_available()
     device = torch.device("cuda") if gpu else torch.device("cpu")
@@ -86,12 +87,41 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     K: int = datasets_params[args.dataset]['K']
     kernels: int = datasets_params[args.dataset]['kernels'] if 'kernels' in datasets_params[args.dataset] else 8
     factor: int = datasets_params[args.dataset]['factor'] if 'factor' in datasets_params[args.dataset] else 2
-    net = datasets_params[args.dataset]['net'](1, K, kernels=kernels, factor=factor)
+    match args.architecture:
+        case 'baseline':
+            net = datasets_params[args.dataset]['net'](1, K, kernels=kernels, factor=factor)
+        case 'enet':
+            net = ENet(1, K, kernels=kernels, factor=factor)
+        case 'swin_unet':
+            net = SwinUNet(1, K)
+        case _:
+            raise ValueError(f"Unsupported architecture: {args.architecture}")
     net.init_weights()
     net.to(device)
+    print(f">> Model has {sum(parameter.numel() for parameter in net.parameters()):,} trainable parameters")
 
-    lr = 0.0005
-    optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
+    default_lrs = {'adam': 0.0005, 'adamw': 0.0005, 'sgd_nesterov': 0.01}
+    lr = args.lr if args.lr is not None else default_lrs[args.optimizer]
+
+    match args.optimizer:
+        case 'adam':
+            optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999),
+                                         weight_decay=args.weight_decay)
+        case 'adamw':
+            optimizer = torch.optim.AdamW(net.parameters(), lr=lr, betas=(0.9, 0.999),
+                                          weight_decay=args.weight_decay)
+        case 'sgd_nesterov':
+            optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=0.9, nesterov=True,
+                                        weight_decay=args.weight_decay)
+        case _:
+            raise ValueError(f"Unsupported optimizer: {args.optimizer}")
+
+    scheduler = None
+    if args.lr_scheduler == 'polynomial':
+        def polynomial_decay(completed_epochs: int) -> float:
+            return max(0.0, 1 - completed_epochs / args.epochs) ** 0.9
+
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=polynomial_decay)
 
     # Dataset part
     B: int = datasets_params[args.dataset]['B']
@@ -121,12 +151,12 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     args.dest.mkdir(parents=True, exist_ok=True)
 
-    return (net, optimizer, device, train_loader, val_loader, K)
+    return (net, optimizer, device, train_loader, val_loader, K, scheduler)
 
 
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
-    net, optimizer, device, train_loader, val_loader, K = setup(args)
+    net, optimizer, device, train_loader, val_loader, K, scheduler = setup(args)
     losses = {'ce': CrossEntropy, 'dice': DiceLoss, 'dicece': DiceCELoss}
 
     if args.mode == "full": # Supervise both background and foreground
@@ -135,7 +165,7 @@ def runTraining(args):
         idk = [0, 1, 3, 4]
     else:
         raise ValueError(args.mode, args.dataset)
-         
+
     loss_fn = losses[args.loss](idk=idk)
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
@@ -227,12 +257,13 @@ def runTraining(args):
                 f.write(message)
 
             best_folder = args.dest / "best_epoch"
-            if best_folder.exists():
-                rmtree(best_folder)
-            copytree(args.dest / f"iter{e:03d}", Path(best_folder))
+            copytree(args.dest / f"iter{e:03d}", Path(best_folder), dirs_exist_ok=True)
 
             torch.save(net, args.dest / "bestmodel.pkl")
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
+
+        if scheduler is not None:
+            scheduler.step()
 
 
 def main():
@@ -242,6 +273,18 @@ def main():
     parser.add_argument('--dataset', default='TOY2', choices=datasets_params.keys())
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
     parser.add_argument('--loss', default='ce', choices=['ce', 'dice', 'dicece'])
+    parser.add_argument('--architecture', default='baseline',
+                        choices=['baseline', 'enet', 'swin_unet'],
+                        help='Network architecture. The default preserves the dataset-specific baseline network.')
+    parser.add_argument('--optimizer', default='adam',
+                        choices=['adam', 'adamw', 'sgd_nesterov'],
+                        help='Optimizer to use. The default reproduces the original Adam baseline.')
+    parser.add_argument('--lr', type=float, default=None,
+                        help='Learning rate. Uses the optimizer-specific default when omitted.')
+    parser.add_argument('--weight-decay', type=float, default=0.0,
+                        help='Weight decay coefficient. Defaults to 0.0, preserving the baseline.')
+    parser.add_argument('--lr-scheduler', default='none', choices=['none', 'polynomial'],
+                        help='Learning-rate schedule. The default keeps the learning rate fixed.')
     parser.add_argument('--dest', type=Path, required=True,
                         help="Destination directory to save the results (predictions and weights).")
 
@@ -251,6 +294,11 @@ def main():
                              "to test the logics around epochs and logging easily.")
 
     args = parser.parse_args()
+
+    if args.lr is not None and args.lr <= 0:
+        parser.error('--lr must be positive')
+    if args.weight_decay < 0:
+        parser.error('--weight-decay must be non-negative')
 
     pprint(args)
 

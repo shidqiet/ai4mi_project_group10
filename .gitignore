@@ -4,6 +4,8 @@ data/*
 results/
 volumes/
 ai4mi/
+.venv/
 __pycache__/
-jobs/*
+1912.05950v1.pdf
 projects
+jobs/*
