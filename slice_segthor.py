@@ -33,22 +33,96 @@ from typing import Callable
 
 import numpy as np
 import nibabel as nib
+from scipy.ndimage import zoom
+from skimage.exposure import equalize_adapthist
 from skimage.io import imsave
 from skimage.transform import resize
 
 from utils import map_, tqdm_
 
 
-def norm_arr(img: np.ndarray) -> np.ndarray:
+def compute_target_spacing(
+    src_path: Path, training_ids: list[str]
+) -> tuple[float, float, float]:
+    """
+    Compute median spacing (training set only)
+    """
+    spacings = []
+    for id_ in training_ids:
+        ct_path = src_path / "train" / id_ / f"{id_}.nii.gz"
+        nib_obj = nib.load(str(ct_path))
+        dx, dy, dz = nib_obj.header.get_zooms()
+        spacings.append((dx, dy, dz))
+
+    spacings = np.asarray(spacings)
+    median_spacing = tuple(np.median(spacings, axis=0).tolist())
+
+    return median_spacing
+
+def compute_norm_stats(
+    src_path: Path, training_ids: list[str]
+) -> tuple[float, float]:
+    """
+    Compute percentile clip range from foreground voxels (training set only)
+    """
+    fg_values = []
+    for id_ in training_ids:
+        ct_path = src_path / "train" / id_ / f"{id_}.nii.gz"
+        gt_path = src_path / "train" / id_ / "GT.nii.gz"
+
+        ct = np.asarray(nib.load(str(ct_path)).dataobj)
+        gt = np.asarray(nib.load(str(gt_path)).dataobj)
+        fg_values.append(ct[gt > 0])
+
+    fg_values = np.concatenate(fg_values)
+    fg_p_low, fg_p_high = np.percentile(fg_values, [0.5, 99.5])
+
+    return fg_p_low, fg_p_high
+
+def resample_arr(
+    img: np.ndarray, 
+    original_spacing: tuple[float, float, float], 
+    target_spacing: tuple[float, float, float],
+    order: int,
+) -> np.ndarray:
+    """
+    Resample the data to the target spacing
+    """
+    zoom_factors = [c / t for c, t in zip(original_spacing, target_spacing)]
+    resampled = zoom(img, zoom_factors, order=order)
+    return resampled
+
+def norm_arr(
+    img: np.ndarray, norm_stats: tuple[float, float]
+) -> np.ndarray:
+    """
+    Clip voxels values to the foreground percentile range
+    and normalize to [0, 1]
+    """
     casted = img.astype(np.float32)
-    shifted = casted - casted.min()
-    norm = shifted / shifted.max()
-    res = 255 * norm
 
-    assert 0 == res.min(), res.min()
-    assert res.max() == 255, res.max()
+    fg_p_low, fg_p_high = norm_stats
+    clipped = np.clip(casted, fg_p_low, fg_p_high)
 
-    return res.astype(np.uint8)
+    norm = (
+        (clipped - fg_p_low) / (fg_p_high - fg_p_low)
+    ) # normalize by training data stats
+
+    # NOTE: changed since the normalization is done by training data stats,
+    # so the min and max of the normalized image may not be exactly 0 and 1.
+    # assert 0 == norm.min(), norm.min()
+    # assert norm.max() == 1, norm.max()
+    assert 0 <= norm.min(), norm.min()
+    assert norm.max() <= 1, norm.max()
+
+    return norm
+
+
+def clahe_arr(img: np.ndarray) -> np.ndarray:
+    """
+    3D CLAHE on the normalized [0, 1] image
+    """
+    return equalize_adapthist(img) # default, untuned
 
 
 def sanity_ct(ct, x, y, z, dx, dy, dz) -> bool:
@@ -80,16 +154,22 @@ def sanity_gt(gt, ct) -> bool:
 resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_aliasing=False)
 
 
-def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
-                  test_mode: bool = False) -> tuple[float, float, float]:
+def slice_patient(
+    id_: str,
+    dest_path: Path,
+    source_path: Path,
+    shape: tuple[int, int],
+    norm_stats: tuple[float, float],
+    target_spacing: tuple[float, float, float],
+    test_mode: bool = False,
+) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
     nib_obj = nib.load(str(ct_path))
     ct: np.ndarray = np.asarray(nib_obj.dataobj)
     # dx, dy, dz = nib_obj.header.get_zooms()
-    x, y, z = ct.shape
-    dx, dy, dz = nib_obj.header.get_zooms()
+    # dx, dy, dz = nib_obj.header.get_zooms()
 
     assert sanity_ct(ct, *ct.shape, *nib_obj.header.get_zooms())
 
@@ -103,9 +183,15 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
 
-    norm_ct: np.ndarray = norm_arr(ct)
+    ct, gt = (
+        resample_arr(ct, nib_obj.header.get_zooms(), target_spacing, order=3), # cubic interpolation
+        resample_arr(gt, nib_obj.header.get_zooms(), target_spacing, order=0) # nearest neighbor interpolation
+    ) # both use nib_obj since ct and gt have same spacing. 
+    x, y, z = ct.shape
+    norm_ct: np.ndarray = norm_arr(ct, norm_stats)
+    clahe_ct: np.ndarray = clahe_arr(norm_ct)
 
-    to_slice_ct = norm_ct
+    to_slice_ct = (255 * clahe_ct).astype(np.uint8) # convert to uint8 for saving as png
     to_slice_gt = gt
 
     for idz in range(z):
@@ -132,7 +218,7 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
                 warnings.filterwarnings("ignore", category=UserWarning)
                 imsave(str(save_path / filename), data)
 
-    return dx, dy, dz
+    return nib_obj.header.get_zooms()
 
 
 def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list[str], list[str]]:
@@ -169,6 +255,9 @@ def main(args: argparse.Namespace):
     test_ids: list[str]
     training_ids, validation_ids, test_ids = get_splits(src_path, args.retains, args.fold)
 
+    norm_stats = compute_norm_stats(src_path, training_ids) # only use training ids
+    target_spacing = compute_target_spacing(src_path, training_ids) # only use training ids
+
     resolution_dict: dict[str, tuple[float, float, float]] = {}
 
     split_ids: list[str]
@@ -180,6 +269,8 @@ def main(args: argparse.Namespace):
                                  dest_path=dest_mode,
                                  source_path=src_path,
                                  shape=tuple(args.shape),
+                                 norm_stats=norm_stats,
+                                 target_spacing=target_spacing,
                                  test_mode=mode == 'test')
         resolutions: list[tuple[float, float, float]]
         iterator = tqdm_(split_ids)
@@ -197,6 +288,15 @@ def main(args: argparse.Namespace):
     with open(dest_path / "spacing.pkl", 'wb') as f:
         pickle.dump(resolution_dict, f, pickle.HIGHEST_PROTOCOL)
         print(f"Saved spacing dictionnary to {f}")
+
+    # Save preprocessing stats for stitching later
+    stats = {
+        "norm_stats": {"p_low": float(norm_stats[0]), "p_high": float(norm_stats[1])},
+        "target_spacing": {"dx": float(target_spacing[0]), "dy": float(target_spacing[1]), "dz": float(target_spacing[2])},
+    }
+    with open(dest_path / "preprocess_stats.pkl", 'wb') as f:
+        pickle.dump(stats, f, pickle.HIGHEST_PROTOCOL)
+        print(f"Saved preprocessing stats to {f}")
 
 
 def get_args() -> argparse.Namespace:

@@ -48,6 +48,45 @@ class CrossEntropy():
         return loss
 
 
+class DiceLoss():
+    def __init__(self, **kwargs):
+        #soft Dice...
+        self.idk = kwargs['idk']
+        self.smooth = kwargs.get('smooth', 1.0)
+        print(f"Initialized {self.__class__.__name__} with {kwargs}")
+
+    def __call__(self, pred_softmax, weak_target):
+        assert pred_softmax.shape == weak_target.shape
+        assert simplex(pred_softmax)
+        assert sset(weak_target, [0, 1])
+
+        p = pred_softmax[:, self.idk, ...]
+        mask = weak_target[:, self.idk, ...].float()
+
+        #one Dice per class, summed over the whole batch
+        inter = einsum("bkwh,bkwh->k", p, mask)
+        sizes = einsum("bkwh->k", p) + einsum("bkwh->k", mask)
+
+        dices = (2 * inter + self.smooth) / (sizes + self.smooth)
+        loss = 1 - dices.mean()
+
+        return loss
+
+
+class DiceCELoss():
+    def __init__(self, **kwargs):
+        self.idk = kwargs['idk']
+        self.ce_weight = kwargs.get('ce_weight', 1.0)
+        self.dice_weight = kwargs.get('dice_weight', 1.0)
+        self.ce = CrossEntropy(idk=self.idk)
+        self.dice = DiceLoss(idk=self.idk, smooth=kwargs.get('smooth', 1.0))
+        print(f"Initialized {self.__class__.__name__} with {kwargs}")
+
+    def __call__(self, pred_softmax, weak_target):
+        return self.ce_weight * self.ce(pred_softmax, weak_target) \
+            + self.dice_weight * self.dice(pred_softmax, weak_target)
+
+
 class PartialCrossEntropy(CrossEntropy):
     def __init__(self, **kwargs):
         super().__init__(idk=[1], **kwargs)

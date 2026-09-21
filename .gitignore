@@ -7,5 +7,5 @@ ai4mi/
 .venv/
 __pycache__/
 1912.05950v1.pdf
-
 projects
+jobs/*

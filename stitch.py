@@ -23,6 +23,7 @@
 # SOFTWARE.
 
 import re
+import pickle
 import argparse
 from itertools import repeat
 from pathlib import Path
@@ -30,6 +31,7 @@ from typing import Match, Pattern
 
 import numpy as np
 import nibabel as nib
+from scipy.ndimage import zoom
 from skimage.io import imread
 from skimage.transform import resize
 
@@ -41,16 +43,29 @@ def get_z(image: Path) -> int:
 
 
 def merge_patient(id_: str, dest_folder: str, images: list[Path],
-                  idxes: list[int], K: int, source_pattern: str) -> None:
+                  idxes: list[int], K: int, source_pattern: str,
+                  stats: dict | None = None) -> None:
     # print(source_pattern.format(id_=id_))
     orig_nib = nib.load(source_pattern.format(id_=id_))
     orig_shape = np.asarray(orig_nib.dataobj).shape
     # print(orig_nib.affine)
 
     X, Y, Z = orig_shape
-    assert Z == len(idxes)
+    # NOTE: disabled as we implemented resampling in the slicing
+    # assert Z == len(idxes)
 
-    res_arr: np.ndarray = np.zeros((X, Y, Z), dtype=np.int16)
+    n = len(idxes)  # number of slices after resampling
+    assert sorted(
+        get_z(images[i]) for i in idxes) == list(range(n)
+    )  # no missing / duplicated slice
+    if stats is not None:
+        dz = float(orig_nib.header.get_zooms()[2])
+        expected_slices = round(Z * dz / stats["target_spacing"]["dz"])
+        # Check if expected slices close to actual slices
+        # NOTE: we allow a difference of 1 slice to account for rounding errors
+        assert abs(n - expected_slices) <= 1, (n, expected_slices)
+
+    res_arr: np.ndarray = np.zeros((X, Y, n), dtype=np.int16)
 
     for idx in idxes:
         img: Path = images[idx]
@@ -69,6 +84,11 @@ def merge_patient(id_: str, dest_folder: str, images: list[Path],
         res_arr[:, :, z] = resized[...]
 
     assert set(np.unique(res_arr)) <= set(range(K))
+
+    # Resample back to original shape
+    res_arr = zoom(
+        res_arr, (1, 1, Z / n), order=0
+    ) # Nearest neighbour interpolation to avoid creating new classes
     assert orig_shape == res_arr.shape, (orig_shape, res_arr.shape)
 
     # res_arr = res_arr.astype(np.int16)
@@ -102,10 +122,15 @@ def main(args) -> None:
     # print(idx_map)
     assert sum(len(idx_map[k]) for k in unique_patients) == len(images)
 
+    stats = None
+    if args.preprocess_stats is not None:
+        with open(args.preprocess_stats, "rb") as f:
+            stats = pickle.load(f)
+
     args.dest_folder.mkdir(parents=True, exist_ok=True)
 
     for p in tqdm_(unique_patients):
-        merge_patient(p, args.dest_folder, images, idx_map[p], args.num_classes, args.source_scan_pattern)
+        merge_patient(p, args.dest_folder, images, idx_map[p], args.num_classes, args.source_scan_pattern, stats)
     # mmap_(lambda p: merge_patient(p, args.dest_folder, images, idx_map[p], K=args.num_classes), patients)
 
 
@@ -119,6 +144,8 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--grp_regex', type=str, required=True)
 
     parser.add_argument('--num_classes', type=int, default=4)
+    parser.add_argument('--preprocess_stats', type=Path, default=None,
+                        help="Optional: preprocess_stats.pkl, used to check the number of slices")
 
     args = parser.parse_args()
 
