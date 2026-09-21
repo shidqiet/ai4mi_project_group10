@@ -42,6 +42,7 @@ from functools import partial
 from dataset import SliceDataset
 from ShallowNet import shallowCNN
 from ENet import ENet
+from UNet import UNet
 from utils import (Dcm,
                    class2one_hot,
                    probs2one_hot,
@@ -58,6 +59,14 @@ datasets_params: dict[str, dict[str, Any]] = {}
 datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+
+# Overrides merged on top of the dataset defaults by --net. Both UNet variants
+# share one class: 2.5D is the 2D net with a wider input. What differs is how
+# many adjacent slices the dataloader stacks into the channel axis.
+nets_params: dict[str, dict[str, Any]] = {}
+nets_params["default"] = {}  # Whatever the dataset asks for (ENet, shallowCNN)
+nets_params["unet2d"] = {'net': UNet, 'kernels': 32, 'B': 8}
+nets_params["unet25d"] = {'net': UNet, 'kernels': 32, 'B': 8, 'neighbours': 2}
 
 def img_transform(img):
         img = img.convert('L')
@@ -83,10 +92,16 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     device = torch.device("cuda") if gpu else torch.device("cpu")
     print(f">> Picked {device} to run experiments")
 
-    K: int = datasets_params[args.dataset]['K']
-    kernels: int = datasets_params[args.dataset]['kernels'] if 'kernels' in datasets_params[args.dataset] else 8
-    factor: int = datasets_params[args.dataset]['factor'] if 'factor' in datasets_params[args.dataset] else 2
-    net = datasets_params[args.dataset]['net'](1, K, kernels=kernels, factor=factor)
+    params: dict[str, Any] = datasets_params[args.dataset] | nets_params[args.net]
+
+    K: int = params['K']
+    kernels: int = params.get('kernels', 8)
+    factor: int = params.get('factor', 2)
+    neighbours: int = params.get('neighbours', 0)
+
+    # 2.5D feeds the neighbours as extra input channels; 2D is the n=0 case
+    in_dim: int = 2 * neighbours + 1
+    net = params['net'](in_dim, K, kernels=kernels, factor=factor)
     net.init_weights()
     net.to(device)
 
@@ -94,16 +109,15 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
 
     # Dataset part
-    B: int = datasets_params[args.dataset]['B']
+    B: int = params['B']
     root_dir = Path("data") / args.dataset
-
-
 
     train_set = SliceDataset('train',
                              root_dir,
                              img_transform=img_transform,
                              gt_transform= partial(gt_transform, K),
-                             debug=args.debug)
+                             debug=args.debug,
+                             neighbours=neighbours)
     train_loader = DataLoader(train_set,
                               batch_size=B,
                               num_workers=5,
@@ -113,7 +127,8 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                            root_dir,
                            img_transform=img_transform,
                            gt_transform=partial(gt_transform, K),
-                           debug=args.debug)
+                           debug=args.debug,
+                           neighbours=neighbours)
     val_loader = DataLoader(val_set,
                             batch_size=B,
                             num_workers=5,
@@ -178,7 +193,7 @@ def runTraining(args):
 
                     # Sanity tests to see we loaded and encoded the data correctly
                     assert 0 <= img.min() and img.max() <= 1
-                    B, _, W, H = img.shape
+                    B = img.shape[0]  # (B, 2n+1, W, H): n=0 for 2D, n>0 for 2.5D
 
                     pred_logits = net(img)
                     pred_probs = F.softmax(1 * pred_logits, dim=1)  # 1 is the temperature parameter
@@ -240,6 +255,9 @@ def main():
 
     parser.add_argument('--epochs', default=20, type=int)
     parser.add_argument('--dataset', default='TOY2', choices=datasets_params.keys())
+    parser.add_argument('--net', default='default', choices=nets_params.keys(),
+                        help="Override the dataset's default network. Both unet variants "
+                             "share one implementation and differ in how slices are stacked.")
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
     parser.add_argument('--loss', default='ce', choices=['ce', 'dice', 'dicece'])
     parser.add_argument('--dest', type=Path, required=True,
