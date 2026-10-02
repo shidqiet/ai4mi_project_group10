@@ -529,6 +529,8 @@ def main():
     pprint(args)
 
     runTraining(args)
+    from visualize_metrics import generate_report
+    generate_report(args.dest)
 
 
 if __name__ == '__main__':
