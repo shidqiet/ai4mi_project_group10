@@ -233,6 +233,113 @@ def plot_best_summary(output: Path, metrics: dict[str, np.ndarray], selected: in
     save_figure(figure, output)
 
 
+def plot_patient_distributions(output: Path, metrics: dict[str, np.ndarray],
+                               selected: int | None) -> None:
+    """Plot selected-epoch patient distributions grouped by organ."""
+    if selected is None:
+        return
+    specs = [("dice3d", "3D Dice", "Dice", False),
+             ("hd95", "HD95", "Distance (mm)", True),
+             ("assd", "ASSD", "Distance (mm)", True),
+             ("hd", "HD", "Distance (mm)", True)]
+    available = [spec for spec in specs if spec[0] in metrics]
+    if not available:
+        return
+    figure, axes = plt.subplots(1, len(available),
+                                figsize=(4.5 * len(available), 5), squeeze=False)
+    for column, (name, title, ylabel, lower) in enumerate(available):
+        axis = axes[0, column]
+        values = metrics[name][selected, :, 1:]
+        distributions = [
+            values[:, class_index][np.isfinite(values[:, class_index])]
+            for class_index in range(values.shape[1])
+        ]
+        labels = [ORGAN_NAMES[index] if index < len(ORGAN_NAMES)
+                  else f"Class {index + 1}" for index in range(values.shape[1])]
+        axis.boxplot(distributions, tick_labels=labels, showmeans=True)
+        axis.set_title(title)
+        axis.set_ylabel(ylabel)
+        axis.tick_params(axis="x", rotation=35)
+        axis.grid(axis="y", alpha=0.25)
+        if lower:
+            axis.text(0.02, 0.04, "lower is better",
+                      transform=axis.transAxes, fontsize=8, color="0.4")
+    figure.suptitle(f"Patient-level distributions at epoch {selected}")
+    save_figure(figure, output)
+
+
+def plot_best_epoch_heatmap(output: Path, metrics: dict[str, np.ndarray],
+                            selected: int | None) -> None:
+    """Plot selected-epoch organ metrics with one independently scaled map per metric."""
+    if selected is None:
+        return
+    specs = [("dice3d", "3D Dice", False),
+             ("hd95", "HD95 (mm)", True),
+             ("assd", "ASSD (mm)", True),
+             ("hd", "HD (mm)", True)]
+    available = [spec for spec in specs if spec[0] in metrics]
+    if not available:
+        return
+    class_count = max(metrics[name].shape[2] for name, *_ in available) - 1
+    figure, axes = plt.subplots(1, len(available),
+                                figsize=(4.2 * len(available), 4.5), squeeze=False)
+    for column, (name, title, lower) in enumerate(available):
+        values = safe_mean(metrics[name], axis=1)[selected, 1:class_count + 1]
+        axis = axes[0, column]
+        image = axis.imshow(values[:, None], aspect="auto", cmap="viridis")
+        axis.set_title(title)
+        axis.set_xticks([0], [title])
+        axis.set_yticks(np.arange(class_count), [
+            ORGAN_NAMES[index] if index < len(ORGAN_NAMES) else f"Class {index + 1}"
+            for index in range(class_count)
+        ])
+        axis.set_ylabel("Organ")
+        figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
+        if lower:
+            axis.text(0.02, -0.12, "lower is better", transform=axis.transAxes,
+                      fontsize=8, color="0.4")
+    figure.suptitle(f"Selected-epoch metric heatmaps (epoch {selected})")
+    save_figure(figure, output)
+
+
+def plot_metric_correlation(output: Path, metrics: dict[str, np.ndarray],
+                            selected: int | None) -> None:
+    """Plot selected-epoch Pearson correlations across valid patient-organ values."""
+    if selected is None:
+        return
+    names = [name for name in ("dice3d", "hd95", "assd", "hd") if name in metrics]
+    if len(names) < 2:
+        return
+    flattened = [metrics[name][selected, :, 1:].reshape(-1) for name in names]
+    values = np.asarray(flattened, dtype=float)
+    valid = np.all(np.isfinite(values), axis=0)
+    if valid.sum() < 2:
+        return
+    values = values[:, valid]
+    correlations = np.ones((len(names), len(names)), dtype=float)
+    for row in range(len(names)):
+        for column in range(row):
+            if np.std(values[row]) == 0 or np.std(values[column]) == 0:
+                correlation = 0.0
+            else:
+                correlation = float(np.corrcoef(values[row], values[column])[0, 1])
+            correlations[row, column] = correlation
+            correlations[column, row] = correlation
+
+    figure, axis = plt.subplots(figsize=(6, 5))
+    image = axis.imshow(correlations, vmin=-1, vmax=1, cmap="coolwarm")
+    labels = [name.upper() for name in names]
+    axis.set_xticks(np.arange(len(labels)), labels, rotation=35, ha="right")
+    axis.set_yticks(np.arange(len(labels)), labels)
+    for row in range(len(names)):
+        for column in range(len(names)):
+            axis.text(column, row, f"{correlations[row, column]:.2f}",
+                      ha="center", va="center", color="black")
+    axis.set_title(f"Metric correlations at epoch {selected}")
+    figure.colorbar(image, ax=axis, label="Pearson correlation")
+    save_figure(figure, output)
+
+
 def generate_report(results_dir: Path, output_dir: Path | None = None) -> None:
     output_dir = output_dir or results_dir / "plots"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -254,6 +361,9 @@ def generate_report(results_dir: Path, output_dir: Path | None = None) -> None:
     plot_foreground_dashboard(output_dir / "foreground_dashboard.png", metrics, selected)
     plot_per_organ_dashboard(output_dir / "per_organ_dashboard.png", metrics, selected)
     plot_best_summary(output_dir / "best_epoch_summary.png", metrics, selected)
+    plot_patient_distributions(output_dir / "patient_distributions.png", metrics, selected)
+    plot_best_epoch_heatmap(output_dir / "best_epoch_heatmap.png", metrics, selected)
+    plot_metric_correlation(output_dir / "metric_correlation.png", metrics, selected)
     write_csv(output_dir / "metrics_summary.csv", metrics, selected,
               run_config.get("selection_metric", "unknown"),
               run_config.get("selection_aggregation", "mean"))
