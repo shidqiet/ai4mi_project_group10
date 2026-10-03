@@ -23,6 +23,7 @@
 # SOFTWARE.
 
 import json
+import time
 import argparse
 import warnings
 from typing import Any, Callable
@@ -202,6 +203,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Any |
 
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
+    torch.manual_seed(args.seed)  # covers weight init and DataLoader shuffle order
     net, optimizer, device, train_loader, val_loader, K, scheduler = setup(args)
     losses = {'ce': CrossEntropy, 'dice': DiceLoss, 'dicece': DiceCELoss}
 
@@ -213,6 +215,7 @@ def runTraining(args):
         raise ValueError(args.mode, args.dataset)
 
     loss_fn = losses[args.loss](idk=idk)
+    start_time = time.time()
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
     log_loss_tra: Tensor = torch.zeros((args.epochs, len(train_loader)))
@@ -431,6 +434,17 @@ def runTraining(args):
             with open(args.dest / "best_epoch.txt", 'w') as f:
                 f.write(message)
 
+            # Per-class means (classes 1..K-1) over validation patients, for cross-run comparison.
+            summary = {'args': vars(args), 'best_epoch': e, 'selection_score': current_score,
+                       'elapsed_s': time.time() - start_time,
+                       'dice2d': log_dice_val[e, :, 1:].mean(0).tolist()}
+            for name, log in [('dice3d', log_dice3d_val), ('hd95', log_hd95_val),
+                              ('hd', log_hd_val), ('assd', log_assd_val)]:
+                if log is not None:
+                    summary[name] = torch.nanmean(log[e, :, 1:], dim=0).tolist()
+            with open(args.dest / "summary.json", 'w') as f:
+                json.dump(summary, f, indent=2, default=str)
+
             best_folder = args.dest / "best_epoch"
             copytree(args.dest / f"iter{e:03d}", Path(best_folder), dirs_exist_ok=True)
 
@@ -476,7 +490,7 @@ def main():
                              "0 is 2D, n > 0 is 2.5D with 2n+1 channels.")
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
     parser.add_argument('--loss', default='ce', choices=['ce', 'dice', 'dicece'])
-    parser.add_argument('--selection-metric', default='dice2d', choices=['dice2d', 'dice3d', 'hd95', 'assd'],
+    parser.add_argument('--selection-metric', default='dice3d', choices=['dice2d', 'dice3d', 'hd95', 'assd'],
                         help='Validation metric used to select and save the best model. '
                              '3D Dice, HD95, and ASSD are available for SegTHOR datasets; '
                              'HD95 and ASSD are minimized.')
@@ -493,6 +507,7 @@ def main():
                         help="Destination directory to save the results (predictions and weights).")
 
     parser.add_argument('--gpu', action='store_true')
+    parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
