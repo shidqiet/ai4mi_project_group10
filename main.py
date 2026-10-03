@@ -170,7 +170,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Any |
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=polynomial_decay)
 
     # Dataset part
-    B: int = params['B']
+    B: int = args.batch_size or params['B']  # dataset default unless overridden
     root_dir = Path("data") / args.dataset
 
     train_set = SliceDataset('train',
@@ -488,6 +488,8 @@ def main():
     parser.add_argument('--adjacent_slices', default=0, type=int,
                         help="Adjacent slices on each side stacked as input channels: "
                              "0 is 2D, n > 0 is 2.5D with 2n+1 channels.")
+    parser.add_argument('--batch-size', type=int, default=None,
+                        help="Overrides the dataset default (SEGTHOR: 8, TOY2: 2).")
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
     parser.add_argument('--loss', default='ce', choices=['ce', 'dice', 'dicece'])
     parser.add_argument('--selection-metric', default='dice3d', choices=['dice2d', 'dice3d', 'hd95', 'assd'],
@@ -526,6 +528,8 @@ def main():
         parser.error('--net_kwargs must be a JSON object')
     if args.adjacent_slices < 0:
         parser.error('--adjacent_slices must be non-negative')
+    if args.batch_size is not None and args.batch_size <= 0:
+        parser.error('--batch-size must be positive')
 
     pprint(args)
 
