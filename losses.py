@@ -78,8 +78,17 @@ class DiceCELoss():
         self.idk = kwargs['idk']
         self.ce_weight = kwargs.get('ce_weight', 1.0)
         self.dice_weight = kwargs.get('dice_weight', 1.0)
+
+        # Background (class 0) covers most of a thoracic slice and reaches a high Dice for free, which dilutes the Dice term.
+        # CE keeps supervising it, and the softmax is still taken over every class, so dropping it here removes it from the overlap
+
+        self.include_background = kwargs.get('include_background', False)
+        dice_idk = self.idk if self.include_background else [k for k in self.idk if k != 0]
+        if not dice_idk:  # Not an assert: config errors must survive python -O
+            raise ValueError(f"No class left for the Dice term, with {self.idk=}")
+
         self.ce = CrossEntropy(idk=self.idk)
-        self.dice = DiceLoss(idk=self.idk, smooth=kwargs.get('smooth', 1.0))
+        self.dice = DiceLoss(idk=dice_idk, smooth=kwargs.get('smooth', 1.0))
         print(f"Initialized {self.__class__.__name__} with {kwargs}")
 
     def __call__(self, pred_softmax, weak_target):
