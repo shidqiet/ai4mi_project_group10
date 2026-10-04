@@ -57,7 +57,7 @@ from utils import (Dcm,
                    volume_surface_metrics_from_slices,
                    save_images)
 
-from losses import (CrossEntropy, DiceLoss, DiceCELoss)
+from losses import (CrossEntropy, DiceLoss, DiceCELoss, NSWDiceCELoss)
 
 datasets_params: dict[str, dict[str, Any]] = {}
 # K for the number of classes
@@ -203,7 +203,8 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Any |
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K, scheduler = setup(args)
-    losses = {'ce': CrossEntropy, 'dice': DiceLoss, 'dicece': DiceCELoss}
+    losses = {'ce': CrossEntropy, 'dice': DiceLoss, 'dicece': DiceCELoss,
+              'nswdicece': NSWDiceCELoss}
 
     if args.mode == "full": # Supervise both background and foreground
         idk = list(range(K))
@@ -475,7 +476,9 @@ def main():
                         help="Adjacent slices on each side stacked as input channels: "
                              "0 is 2D, n > 0 is 2.5D with 2n+1 channels.")
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
-    parser.add_argument('--loss', default='ce', choices=['ce', 'dice', 'dicece'])
+    parser.add_argument('--loss', default='ce', choices=['ce', 'dice', 'dicece', 'nswdicece'],
+                        help="'nswdicece' pools the Dice term by Nash social welfare "
+                             "(geometric mean), so the worst organ dominates it.")
     parser.add_argument('--selection-metric', default='dice2d', choices=['dice2d', 'dice3d', 'hd95', 'assd'],
                         help='Validation metric used to select and save the best model. '
                              '3D Dice, HD95, and ASSD are available for SegTHOR datasets; '

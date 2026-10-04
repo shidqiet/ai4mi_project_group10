@@ -23,7 +23,9 @@
 # SOFTWARE.
 
 
-from utils import simplex, sset
+from torch import Tensor
+
+from utils import nsw, simplex, sset
 
 
 class CrossEntropy():
@@ -54,7 +56,7 @@ class DiceLoss():
         self.smooth = kwargs.get('smooth', 1.0)
         print(f"Initialized {self.__class__.__name__} with {kwargs}")
 
-    def __call__(self, pred_softmax, weak_target):
+    def per_class_dice(self, pred_softmax, weak_target) -> Tensor:
         assert pred_softmax.shape == weak_target.shape
         assert simplex(pred_softmax)
         assert sset(weak_target, [0, 1])
@@ -67,13 +69,48 @@ class DiceLoss():
         inter = (p * mask).sum(dim=axes)
         sizes = p.sum(dim=axes) + mask.sum(dim=axes)
 
-        dices = (2 * inter + self.smooth) / (sizes + self.smooth)
-        loss = 1 - dices.mean()
+        # The smooth term keeps every entry strictly positive, which NSWDiceLoss needs
+        return (2 * inter + self.smooth) / (sizes + self.smooth)
 
-        return loss
+    def aggregate(self, dices: Tensor) -> Tensor:
+        # Subclasses change how the per-class scores are pooled, nothing else
+        return dices.mean()
+
+    def __call__(self, pred_softmax, weak_target):
+        return 1 - self.aggregate(self.per_class_dice(pred_softmax, weak_target))
+
+
+class NSWDiceLoss(DiceLoss):
+    """
+    Dice loss pooled by Nash social welfare (the geometric mean) instead of the mean.
+
+    The geometric mean is dominated by the weakest class, so a well-segmented heart can
+    no longer offset a failing esophagus. Background must be excluded by the caller: an
+    easy, near-constant class would spend one of the n slots without carrying signal.
+
+    `nsw` needs strictly positive inputs: at 0 its gradient is nan, and it blows up
+    nearby (~7e3 at 1e-6). Soft probabilities alone do not give that. When a class is
+    absent from the batch ground truth the Dice numerator is exactly 0, however soft the
+    predictions are, so `smooth` is the only thing lifting it off the floor -- hence the
+    check below.
+
+    Known limitation: an absent class still lands near `smooth / (sizes + smooth)` and
+    the geometric mean is dominated by it, so a batch missing an organ reports near-total
+    failure. Pooling only the classes present in the ground truth, the way readme.md
+    settles the empty-mask policy for HD95, is the open fix.
+    """
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if self.smooth <= 0:  # Not an assert: config errors must survive python -O
+            raise ValueError(f"NSWDiceLoss needs a strictly positive smooth, got {self.smooth}")
+
+    def aggregate(self, dices: Tensor) -> Tensor:
+        return nsw(dices)
 
 
 class DiceCELoss():
+    dice_cls = DiceLoss  # which type of Dice to combine with CE
+
     def __init__(self, **kwargs):
         self.idk = kwargs['idk']
         self.ce_weight = kwargs.get('ce_weight', 1.0)
@@ -88,12 +125,19 @@ class DiceCELoss():
             raise ValueError(f"No class left for the Dice term, with {self.idk=}")
 
         self.ce = CrossEntropy(idk=self.idk)
-        self.dice = DiceLoss(idk=dice_idk, smooth=kwargs.get('smooth', 1.0))
+        self.dice = self.dice_cls(idk=dice_idk, smooth=kwargs.get('smooth', 1.0))
         print(f"Initialized {self.__class__.__name__} with {kwargs}")
 
     def __call__(self, pred_softmax, weak_target):
         return self.ce_weight * self.ce(pred_softmax, weak_target) \
             + self.dice_weight * self.dice(pred_softmax, weak_target)
+
+
+class NSWDiceCELoss(DiceCELoss):
+    """
+    Cross-entropy combined with a Nash-social-welfare-pooled Dice term.
+    """
+    dice_cls = NSWDiceLoss
 
 
 class PartialCrossEntropy(CrossEntropy):
