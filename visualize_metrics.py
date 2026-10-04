@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-ORGAN_NAMES = ("Aorta", "Esophagus", "Heart", "Trachea")
+ORGAN_NAMES = ("Esophagus", "Heart", "Trachea", "Aorta")
 COLOURS = plt.get_cmap("tab10")
 
 
@@ -93,7 +93,7 @@ def plot_per_class(output: Path, values: np.ndarray, title: str, ylabel: str,
     class_means = safe_mean(values, axis=1)
     for class_index in range(1, values.shape[2]):
         label = ORGAN_NAMES[class_index - 1] if class_index <= len(ORGAN_NAMES) else f"Class {class_index}"
-        axis.plot(class_means[:, class_index - 1], label=label,
+        axis.plot(class_means[:, class_index], label=label,
                   color=COLOURS(class_index - 1))
     mark_epoch(axis, selected)
     axis.set(title=title, xlabel="Epoch", ylabel=ylabel)
