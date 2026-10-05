@@ -30,7 +30,6 @@ from typing import Any, Callable
 from pathlib import Path
 from pprint import pprint
 from operator import itemgetter
-from shutil import copytree
 
 import torch
 import numpy as np
@@ -270,6 +269,8 @@ def runTraining(args):
                     active_patient_id: str | None = None
                     active_patient_slices: list[tuple[int, Tensor, Tensor]] = []
                     completed_patients: set[str] = set()
+                    val_volumes: dict[str, list[tuple[int, Tensor, Tensor]]] = {}  # Kept for --surface-metrics best
+                    val_preds: list[tuple[Tensor, list[str]]] = []  # Written to disk only if this epoch is the best
 
             with cm():  # Either dummy context manager, or the torch.no_grad for validation
                 j = 0
@@ -304,9 +305,7 @@ def runTraining(args):
                             warnings.filterwarnings('ignore', category=UserWarning)
                             predicted_class: Tensor = probs2class(pred_probs)
                             mult: int = 63 if K == 5 else (255 / (K - 1))
-                            save_images(predicted_class * mult,
-                                        data['stems'],
-                                        args.dest / f"iter{e:03d}" / m)
+                            val_preds.append(((predicted_class * mult).to(torch.uint8).cpu(), data['stems']))
 
                         if compute_3d_dice:
                             assert log_dice3d_val is not None
@@ -322,17 +321,14 @@ def runTraining(args):
                                     assert active_patient_id not in completed_patients
                                     record_volume_dice(log_dice3d_val, e, active_patient_id,
                                                        active_patient_slices, val_patient_indexes, K)
-                                    record_volume_surface_metrics(
-                                        log_hd95_val, log_hd_val, log_assd_val, e, active_patient_id,
-                                        active_patient_slices, val_patient_indexes, K, volume_spacing,
-                                    )
+                                    val_volumes[active_patient_id] = active_patient_slices
                                     completed_patients.add(active_patient_id)
                                     active_patient_id = patient_id
                                     active_patient_slices = []
 
                                 active_patient_slices.append((slice_id,
-                                                              pred_slice.detach().cpu(),
-                                                              gt_slice.detach().cpu()))
+                                                              pred_slice.detach().cpu().to(torch.uint8),
+                                                              gt_slice.detach().cpu().to(torch.uint8)))
 
                     j += B  # Keep in mind that _in theory_, each batch might have a different size
                     # For the DSC average: do not take the background class (0) into account:
@@ -352,10 +348,7 @@ def runTraining(args):
                 assert active_patient_id not in completed_patients
                 record_volume_dice(log_dice3d_val, e, active_patient_id,
                                    active_patient_slices, val_patient_indexes, K)
-                record_volume_surface_metrics(
-                    log_hd95_val, log_hd_val, log_assd_val, e, active_patient_id,
-                    active_patient_slices, val_patient_indexes, K, volume_spacing,
-                )
+                val_volumes[active_patient_id] = active_patient_slices
                 completed_patients.add(active_patient_id)
                 assert completed_patients == set(val_patient_indexes)
 
@@ -445,9 +438,10 @@ def runTraining(args):
             with open(args.dest / "summary.json", 'w') as f:
                 json.dump(summary, f, indent=2, default=str)
 
-            best_folder = args.dest / "best_epoch"
-            copytree(args.dest / f"iter{e:03d}", Path(best_folder), dirs_exist_ok=True)
+            for segs, stems in val_preds:
+                save_images(segs, stems, args.dest / "best_epoch" / "val")
 
+            best_val_volumes = val_volumes
             torch.save(net, args.dest / "bestmodel.pkl")
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
         else:
