@@ -478,7 +478,7 @@ def main():
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
     parser.add_argument('--loss', default='ce', choices=['ce', 'dice', 'dicece', 'nswdicece'],
                         help="'nswdicece' pools the Dice term by Nash social welfare "
-                             "(geometric mean), so the worst organ dominates it.")
+                             "(geometric mean, as -log NSW), so the worst organ dominates it.")
     parser.add_argument('--selection-metric', default='dice2d', choices=['dice2d', 'dice3d', 'hd95', 'assd'],
                         help='Validation metric used to select and save the best model. '
                              '3D Dice, HD95, and ASSD are available for SegTHOR datasets; '

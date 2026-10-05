@@ -25,7 +25,7 @@
 
 from torch import Tensor
 
-from utils import nsw, simplex, sset
+from utils import simplex, sset
 
 
 class CrossEntropy():
@@ -69,43 +69,45 @@ class DiceLoss():
         inter = (p * mask).sum(dim=axes)
         sizes = p.sum(dim=axes) + mask.sum(dim=axes)
 
-        # The smooth term keeps every entry strictly positive, which NSWDiceLoss needs
+        # The smooth term keeps every entry strictly positive, which NSWDiceLoss's log needs
         return (2 * inter + self.smooth) / (sizes + self.smooth)
 
-    def aggregate(self, dices: Tensor) -> Tensor:
-        # Subclasses change how the per-class scores are pooled, nothing else
-        return dices.mean()
+    def dice_loss(self, dices: Tensor) -> Tensor:
+        # Subclasses change how the per-class scores become one loss, nothing else
+        return 1 - dices.mean()
 
     def __call__(self, pred_softmax, weak_target):
-        return 1 - self.aggregate(self.per_class_dice(pred_softmax, weak_target))
+        return self.dice_loss(self.per_class_dice(pred_softmax, weak_target))
 
 
 class NSWDiceLoss(DiceLoss):
     """
-    Dice loss pooled by Nash social welfare (the geometric mean) instead of the mean.
+    Dice loss pooled by Nash social welfare (the geometric mean), in log form:
+    -log(NSW) = -mean(log dice), as in Wong et al. 2018 (exponential logarithmic loss, gamma=1).
 
     The geometric mean is dominated by the weakest class, so a well-segmented heart can
     no longer offset a failing esophagus. Background must be excluded by the caller: an
     easy, near-constant class would spend one of the n slots without carrying signal.
 
-    `nsw` needs strictly positive inputs: at 0 its gradient is nan, and it blows up
-    nearby (~7e3 at 1e-6). Soft probabilities alone do not give that. When a class is
-    absent from the batch ground truth the Dice numerator is exactly 0, however soft the
-    predictions are, so `smooth` is the only thing lifting it off the floor -- hence the
-    check below.
+    Why the log and not 1 - NSW: the gradient of 1 - NSW w.r.t. class j is NSW / (n * dice_j),
+    so one collapsed class (e.g. an organ absent from the batch, ~22% of SegTHOR batches)
+    shrinks the gradient of every other class. The log turns the product into a sum: the
+    gradient is 1 / (n * dice_j), independent of the other classes, and the weakest class
+    still gets the largest push. Ranking and optimum (all dices = 1 -> loss 0) are unchanged;
+    the value is unbounded above, so it is not comparable to 1 - NSW or the mean Dice loss.
 
-    Known limitation: an absent class still lands near `smooth / (sizes + smooth)` and
-    the geometric mean is dominated by it, so a batch missing an organ reports near-total
-    failure. Pooling only the classes present in the ground truth, the way readme.md
-    settles the empty-mask policy for HD95, is the open fix.
+    A class absent from the batch ground truth has dice = smooth / (S + smooth), with S its
+    total predicted probability, so its term is log(S / smooth + 1): a gentle "predict
+    nothing here" signal (Tilborghs et al. 2022), and false positives are also penalised by
+    CE when combined. `smooth` sets that strength and keeps log() finite, hence the check.
     """
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         if self.smooth <= 0:  # Not an assert: config errors must survive python -O
             raise ValueError(f"NSWDiceLoss needs a strictly positive smooth, got {self.smooth}")
 
-    def aggregate(self, dices: Tensor) -> Tensor:
-        return nsw(dices)
+    def dice_loss(self, dices: Tensor) -> Tensor:
+        return -dices.log().mean()
 
 
 class DiceCELoss():
