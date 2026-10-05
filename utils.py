@@ -312,7 +312,7 @@ def nsw(scores: Tensor, dim: int = -1) -> Tensor:
       strictly positive scores are needed for finite gradients.
     Used as the metric; NSWDiceLoss trains on -log of it.
     """
-    if scores.shape[dim] == 0:  # Not an assert: must survive python -O
+    if scores.shape[dim] == 0:  #not an assert: must survive python -O
         raise ValueError(f"nsw needs at least one score along dim {dim}, got shape {tuple(scores.shape)}")
 
     return torch.exp(torch.log(scores).mean(dim))

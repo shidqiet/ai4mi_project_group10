@@ -55,7 +55,8 @@ from utils import (Dcm,
                    dice_coef,
                    volume_dice_from_slices,
                    volume_surface_metrics_from_slices,
-                   save_images)
+                   save_images,
+                   nsw)
 
 from losses import (CrossEntropy, DiceLoss, DiceCELoss, NSWDiceCELoss)
 
@@ -125,6 +126,14 @@ def record_volume_surface_metrics(
     log_hd95[epoch, patient_index, :] = hd95
     log_hd[epoch, patient_index, :] = hd
     log_assd[epoch, patient_index, :] = assd
+
+
+def aggregate_dice(scores: Tensor, aggregation: str) -> float:
+    """Aggregate foreground Dice scores across samples and classes."""
+    foreground_scores = scores[:, 1:].mean(dim=0)
+    if aggregation == 'nsw':
+        return nsw(foreground_scores, dim=0).item()
+    return foreground_scores.mean().item()
 
 
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Any | None]:
@@ -372,10 +381,10 @@ def runTraining(args):
         if log_assd_val is not None:
             np.save(args.dest / "assd_val.npy", log_assd_val[:e + 1])
 
-        dice2d: float = log_dice_val[e, :, 1:].mean().item()
+        dice2d: float = aggregate_dice(log_dice_val[e], args.selection_aggregation)
         dice3d: float | None = None
         if log_dice3d_val is not None:
-            dice3d = log_dice3d_val[e, :, 1:].mean().item()
+            dice3d = aggregate_dice(log_dice3d_val[e], args.selection_aggregation)
         hd95: float | None = None
         hd: float | None = None
         assd: float | None = None
@@ -483,6 +492,9 @@ def main():
                         help='Validation metric used to select and save the best model. '
                              '3D Dice, HD95, and ASSD are available for SegTHOR datasets; '
                              'HD95 and ASSD are minimized.')
+    parser.add_argument('--selection-aggregation', default='mean', choices=['mean', 'nsw'],
+                    help='Aggregation across foreground classes for Dice selection. '
+                         'NSW uses the geometric mean and is only valid for Dice metrics.')
     parser.add_argument('--optimizer', default='adam',
                         choices=['adam', 'adamw', 'sgd_nesterov'],
                         help='Optimizer to use. The default reproduces the original Adam baseline.')
@@ -514,10 +526,14 @@ def main():
         parser.error('--net_kwargs must be a JSON object')
     if args.adjacent_slices < 0:
         parser.error('--adjacent_slices must be non-negative')
+    if args.selection_aggregation == 'nsw' and args.selection_metric not in ['dice2d', 'dice3d']:
+        parser.error('--selection-aggregation nsw is only available with dice2d or dice3d')
 
     pprint(args)
 
     runTraining(args)
+    from visualize_metrics import generate_report
+    generate_report(args.dest)
 
 
 if __name__ == '__main__':
