@@ -23,6 +23,8 @@
 # SOFTWARE.
 
 
+from torch import Tensor
+
 from utils import simplex, sset
 
 
@@ -54,7 +56,7 @@ class DiceLoss():
         self.smooth = kwargs.get('smooth', 1.0)
         print(f"Initialized {self.__class__.__name__} with {kwargs}")
 
-    def __call__(self, pred_softmax, weak_target):
+    def per_class_dice(self, pred_softmax, weak_target) -> Tensor:
         assert pred_softmax.shape == weak_target.shape
         assert simplex(pred_softmax)
         assert sset(weak_target, [0, 1])
@@ -67,19 +69,65 @@ class DiceLoss():
         inter = (p * mask).sum(dim=axes)
         sizes = p.sum(dim=axes) + mask.sum(dim=axes)
 
-        dices = (2 * inter + self.smooth) / (sizes + self.smooth)
-        loss = 1 - dices.mean()
+        # The smooth term keeps every entry strictly positive, which NSWDiceLoss's log needs
+        return (2 * inter + self.smooth) / (sizes + self.smooth)
 
-        return loss
+    def dice_loss(self, dices: Tensor) -> Tensor:
+        # Subclasses change how the per-class scores become one loss, nothing else
+        return 1 - dices.mean()
+
+    def __call__(self, pred_softmax, weak_target):
+        return self.dice_loss(self.per_class_dice(pred_softmax, weak_target))
+
+
+class NSWDiceLoss(DiceLoss):
+    """
+    Dice loss pooled by Nash social welfare (the geometric mean), in log form:
+    -log(NSW) = -mean(log dice), as in Wong et al. 2018 (exponential logarithmic loss, gamma=1).
+
+    The geometric mean is dominated by the weakest class, so a well-segmented heart can
+    no longer offset a failing esophagus. Background must be excluded by the caller: an
+    easy, near-constant class would spend one of the n slots without carrying signal.
+
+    Why the log and not 1 - NSW: the gradient of 1 - NSW w.r.t. class j is NSW / (n * dice_j),
+    so one collapsed class (e.g. an organ absent from the batch, ~22% of SegTHOR batches)
+    shrinks the gradient of every other class. The log turns the product into a sum: the
+    gradient is 1 / (n * dice_j), independent of the other classes, and the weakest class
+    still gets the largest push. Ranking and optimum (all dices = 1 -> loss 0) are unchanged;
+    the value is unbounded above, so it is not comparable to 1 - NSW or the mean Dice loss.
+
+    A class absent from the batch ground truth has dice = smooth / (S + smooth), with S its
+    total predicted probability, so its term is log(S / smooth + 1): a gentle "predict
+    nothing here" signal (Tilborghs et al. 2022), and false positives are also penalised by
+    CE when combined. `smooth` sets that strength and keeps log() finite, hence the check.
+    """
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if self.smooth <= 0:  # Not an assert: config errors must survive python -O
+            raise ValueError(f"NSWDiceLoss needs a strictly positive smooth, got {self.smooth}")
+
+    def dice_loss(self, dices: Tensor) -> Tensor:
+        return -dices.log().mean()
 
 
 class DiceCELoss():
+    dice_cls = DiceLoss  # which type of Dice to combine with CE
+
     def __init__(self, **kwargs):
         self.idk = kwargs['idk']
         self.ce_weight = kwargs.get('ce_weight', 1.0)
         self.dice_weight = kwargs.get('dice_weight', 1.0)
+
+        # Background (class 0) covers most of a thoracic slice and reaches a high Dice for free, which dilutes the Dice term.
+        # CE keeps supervising it, and the softmax is still taken over every class, so dropping it here removes it from the overlap
+
+        self.include_background = kwargs.get('include_background', False)
+        dice_idk = self.idk if self.include_background else [k for k in self.idk if k != 0]
+        if not dice_idk:  # Not an assert: config errors must survive python -O
+            raise ValueError(f"No class left for the Dice term, with {self.idk=}")
+
         self.ce = CrossEntropy(idk=self.idk)
-        self.dice = DiceLoss(idk=self.idk, smooth=kwargs.get('smooth', 1.0))
+        self.dice = self.dice_cls(idk=dice_idk, smooth=kwargs.get('smooth', 1.0))
         print(f"Initialized {self.__class__.__name__} with {kwargs}")
 
     def __call__(self, pred_softmax, weak_target):
@@ -87,6 +135,13 @@ class DiceCELoss():
         dice = self.dice(pred_softmax, weak_target)
         self.terms = {'ce': ce.detach(), 'dice': dice.detach()}  # Unweighted, read by main.py for logging
         return self.ce_weight * ce + self.dice_weight * dice
+
+
+class NSWDiceCELoss(DiceCELoss):
+    """
+    Cross-entropy combined with a Nash-social-welfare-pooled Dice term.
+    """
+    dice_cls = NSWDiceLoss
 
 
 class PartialCrossEntropy(CrossEntropy):

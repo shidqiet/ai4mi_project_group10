@@ -307,11 +307,17 @@ def union(a: Tensor, b: Tensor) -> Tensor:
     return res
 
 def nsw(scores: Tensor, dim: int = -1) -> Tensor:
-     """
-     Computes the geometric mean of the per organ Dice scores for each class.
+    """
+    Nash social welfare: the geometric mean of per-class scores along `dim`.
 
-     """
-     if scores.shape[dim] == 0:
-          raise ValueError
-     
-     return torch.exp((torch.log(scores)).mean(dim))
+    Contract (the caller's job, not checked here):
+    - foreground classes only -- an easy background class would take one of the n slots;
+    - already reduced over samples, so `dim` indexes classes;
+    - scores in [0, 1]; a 0 gives exactly 0 (log(0) = -inf, exp(-inf) = 0), but
+      strictly positive scores are needed for finite gradients.
+    Used as the metric; NSWDiceLoss trains on -log of it.
+    """
+    if scores.shape[dim] == 0:  #not an assert: must survive python -O
+        raise ValueError(f"nsw needs at least one score along dim {dim}, got shape {tuple(scores.shape)}")
+
+    return torch.exp(torch.log(scores).mean(dim))
