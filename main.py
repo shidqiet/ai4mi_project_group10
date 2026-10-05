@@ -220,6 +220,7 @@ def runTraining(args):
     log_loss_tra: Tensor = torch.zeros((args.epochs, len(train_loader)))
     log_dice_tra: Tensor = torch.zeros((args.epochs, len(train_loader.dataset), K))
     log_loss_val: Tensor = torch.zeros((args.epochs, len(val_loader)))
+    log_loss_terms: dict[str, dict[str, Tensor]] = {'train': {}, 'val': {}}  # Composite losses only (e.g. dicece)
     log_dice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
 
     # SegTHOR validation slices are named Patient_XX_ZZZZ.  The validation
@@ -295,6 +296,8 @@ def runTraining(args):
 
                     loss = loss_fn(pred_probs, gt)
                     log_loss[e, i] = loss.item()  # One loss value per batch (averaged in the loss)
+                    for name, term in getattr(loss_fn, 'terms', {}).items():
+                        log_loss_terms[m].setdefault(name, torch.zeros((args.epochs, len(loader))))[e, i] = term.item()
 
                     if opt:  # Only for training
                         loss.backward()
@@ -363,6 +366,9 @@ def runTraining(args):
         np.save(args.dest / "loss_tra.npy", log_loss_tra[:e + 1])
         np.save(args.dest / "dice_tra.npy", log_dice_tra[:e + 1])
         np.save(args.dest / "loss_val.npy", log_loss_val[:e + 1])
+        for m, terms in log_loss_terms.items():
+            for name, log in terms.items():
+                np.save(args.dest / f"loss_{name}_{m[:3]}.npy", log[:e + 1])  # e.g. loss_ce_tra.npy
         np.save(args.dest / "dice_val.npy", log_dice_val[:e + 1])
         if log_dice3d_val is not None:
             np.save(args.dest / "dice3d_val.npy", log_dice3d_val[:e + 1])
@@ -467,6 +473,21 @@ def runTraining(args):
 
         if scheduler is not None:
             scheduler.step()
+
+    if args.distance_metrics_at == 'best' and log_hd95_val is not None:
+        assert log_hd_val is not None and log_assd_val is not None
+        best_e: int = summary['best_epoch']
+        for patient_id, slices in best_val_volumes.items():
+            record_volume_surface_metrics(log_hd95_val, log_hd_val, log_assd_val, best_e, patient_id,
+                                          slices, val_patient_indexes, K, volume_spacing)
+        for name, log in [('hd95', log_hd95_val), ('hd', log_hd_val), ('assd', log_assd_val)]:
+            np.save(args.dest / f"{name}_val.npy", log[:e + 1])
+            summary[name] = torch.nanmean(log[best_e, :, 1:], dim=0).tolist()
+        with open(args.dest / "summary.json", 'w') as f:
+            json.dump(summary, f, indent=2, default=str)
+        print(f">>> Best epoch {best_e} 3D metrics: HD95={torch.nanmean(log_hd95_val[best_e, :, 1:]):05.2f} mm, "
+              f"HD={torch.nanmean(log_hd_val[best_e, :, 1:]):05.2f} mm, "
+              f"ASSD={torch.nanmean(log_assd_val[best_e, :, 1:]):05.2f} mm")
 
 
 def main():

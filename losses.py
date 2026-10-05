@@ -83,8 +83,10 @@ class DiceCELoss():
         print(f"Initialized {self.__class__.__name__} with {kwargs}")
 
     def __call__(self, pred_softmax, weak_target):
-        return self.ce_weight * self.ce(pred_softmax, weak_target) \
-            + self.dice_weight * self.dice(pred_softmax, weak_target)
+        ce = self.ce(pred_softmax, weak_target)
+        dice = self.dice(pred_softmax, weak_target)
+        self.terms = {'ce': ce.detach(), 'dice': dice.detach()}  # Unweighted, read by main.py for logging
+        return self.ce_weight * ce + self.dice_weight * dice
 
 
 class PartialCrossEntropy(CrossEntropy):
