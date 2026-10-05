@@ -235,6 +235,12 @@ with `main.py` to select the checkpoint with the highest mean foreground 3D
 validation Dice; the default `dice2d` preserves the original slice-level
 selection behaviour.
 
+Training automatically generates additional reports in `<dest>/plots/`,
+including raw per-organ curves, foreground mean/NSW Dice curves, selected-epoch
+patient boxplots, a selected-epoch organ-metric heatmap, and a CSV summary.
+It also includes a selected-epoch correlation heatmap for the available 3D
+metrics.
+
 ### 3D HD95 validation metric
 
 The `hd95_val.npy` metric complements 3D Dice with a boundary distance
