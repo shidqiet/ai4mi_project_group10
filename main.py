@@ -269,7 +269,7 @@ def runTraining(args):
                     active_patient_id: str | None = None
                     active_patient_slices: list[tuple[int, Tensor, Tensor]] = []
                     completed_patients: set[str] = set()
-                    val_volumes: dict[str, list[tuple[int, Tensor, Tensor]]] = {}  # Kept for --surface-metrics best
+                    val_volumes: dict[str, list[tuple[int, Tensor, Tensor]]] = {}  # Kept for --distance-metrics-at best
                     val_preds: list[tuple[Tensor, list[str]]] = []  # Written to disk only if this epoch is the best
 
             with cm():  # Either dummy context manager, or the torch.no_grad for validation
@@ -351,6 +351,12 @@ def runTraining(args):
                 val_volumes[active_patient_id] = active_patient_slices
                 completed_patients.add(active_patient_id)
                 assert completed_patients == set(val_patient_indexes)
+                if args.distance_metrics_at == 'every-epoch':
+                    for patient_id, slices in val_volumes.items():
+                        record_volume_surface_metrics(
+                            log_hd95_val, log_hd_val, log_assd_val, e, patient_id,
+                            slices, val_patient_indexes, K, volume_spacing,
+                        )
 
         # Only the epochs actually run are saved, so early stopping (or a crash) does not
         # leave rows of zeros behind in the .npy files.
@@ -380,6 +386,8 @@ def runTraining(args):
             hd = torch.nanmean(log_hd_val[e, :, 1:]).item()
         if log_assd_val is not None:
             assd = torch.nanmean(log_assd_val[e, :, 1:]).item()
+        if args.distance_metrics_at == 'best':  # Not computed yet: only for the best epoch, after training
+            hd95 = hd = assd = None
         if hd95 is not None and hd is not None and assd is not None:
             print(f">>> Validation 3D metrics at epoch {e}: Dice={dice3d:05.3f}, "
                   f"HD95={hd95:05.2f} mm, HD={hd:05.2f} mm, ASSD={assd:05.2f} mm")
@@ -490,6 +498,9 @@ def main():
                         help='Validation metric used to select and save the best model. '
                              '3D Dice, HD95, and ASSD are available for SegTHOR datasets; '
                              'HD95 and ASSD are minimized.')
+    parser.add_argument('--distance-metrics-at', default='every-epoch', choices=['every-epoch', 'best'],
+                        help='When to compute HD95/HD/ASSD (slow): every epoch, or once for the '
+                             'best epoch after training (other epochs stay NaN).')
     parser.add_argument('--optimizer', default='adam',
                         choices=['adam', 'adamw', 'sgd_nesterov'],
                         help='Optimizer to use. The default reproduces the original Adam baseline.')
@@ -524,6 +535,8 @@ def main():
         parser.error('--adjacent_slices must be non-negative')
     if args.batch_size is not None and args.batch_size <= 0:
         parser.error('--batch-size must be positive')
+    if args.distance_metrics_at == 'best' and args.selection_metric in ['hd95', 'assd']:
+        parser.error(f'--selection-metric {args.selection_metric} needs --distance-metrics-at every-epoch')
 
     pprint(args)
 
