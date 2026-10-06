@@ -177,7 +177,8 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Any |
                              img_transform=img_transform,
                              gt_transform= partial(gt_transform, K),
                              debug=args.debug,
-                             adjacent_slices=adjacent_slices)
+                             adjacent_slices=adjacent_slices,
+                             augment=args.augment)  # Never augment val data
     train_loader = DataLoader(train_set,
                               batch_size=B,
                               num_workers=5,
@@ -491,6 +492,9 @@ def main():
                         help='Learning-rate schedule. The default keeps the learning rate fixed.')
     parser.add_argument('--dest', type=Path, required=True,
                         help="Destination directory to save the results (predictions and weights).")
+    parser.add_argument('--augment', action='store_true',
+                        help="Apply augmentation to the training set only."
+                             "Validation is never augmented.")
 
     parser.add_argument('--gpu', action='store_true')
     parser.add_argument('--debug', action='store_true',
