@@ -302,11 +302,10 @@ def union(a: Tensor, b: Tensor) -> Tensor:
     return res
 
 def nsw(scores: Tensor, dim: int = -1) -> Tensor:
-     """
-     Computes the geometric mean of the per organ Dice scores for each class.
+    """
+    Nash social welfare: the geometric mean of per-class scores along `dim`.
+    """
+    if scores.shape[dim] == 0:  #not an assert: must survive python -O
+        raise ValueError(f"nsw needs at least one score along dim {dim}, got shape {tuple(scores.shape)}")
 
-     """
-     if scores.shape[dim] == 0:
-          raise ValueError
-     
-     return torch.exp((torch.log(scores)).mean(dim))
+    return torch.exp(torch.log(scores).mean(dim))
