@@ -84,22 +84,6 @@ class NSWDiceLoss(DiceLoss):
     """
     Dice loss pooled by Nash social welfare (the geometric mean), in log form:
     -log(NSW) = -mean(log dice), as in Wong et al. 2018 (exponential logarithmic loss, gamma=1).
-
-    The geometric mean is dominated by the weakest class, so a well-segmented heart can
-    no longer offset a failing esophagus. Background must be excluded by the caller: an
-    easy, near-constant class would spend one of the n slots without carrying signal.
-
-    Why the log and not 1 - NSW: the gradient of 1 - NSW w.r.t. class j is NSW / (n * dice_j),
-    so one collapsed class (e.g. an organ absent from the batch, ~22% of SegTHOR batches)
-    shrinks the gradient of every other class. The log turns the product into a sum: the
-    gradient is 1 / (n * dice_j), independent of the other classes, and the weakest class
-    still gets the largest push. Ranking and optimum (all dices = 1 -> loss 0) are unchanged;
-    the value is unbounded above, so it is not comparable to 1 - NSW or the mean Dice loss.
-
-    A class absent from the batch ground truth has dice = smooth / (S + smooth), with S its
-    total predicted probability, so its term is log(S / smooth + 1): a gentle "predict
-    nothing here" signal (Tilborghs et al. 2022), and false positives are also penalised by
-    CE when combined. `smooth` sets that strength and keeps log() finite, hence the check.
     """
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
