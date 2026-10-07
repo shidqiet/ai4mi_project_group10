@@ -1,0 +1,66 @@
+#!/bin/bash
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --job-name=arch-sweep
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=07:00:00
+#SBATCH --output=jobs/%x_%A_%a.out
+
+# Run directly; it submits itself as an array of (config x seed) tasks:
+#   job_scripts/arch_sweep.job            # seed 0
+#   job_scripts/arch_sweep.job 0 1 2      # three seeds
+# It can be launched from any directory: it submits from the repo root, so
+# outputs go to results/ and Slurm logs to jobs/ (both git-ignored).
+set -euo pipefail
+
+SWEEP=arch_sweep
+SEEDS=("${@:-0}")
+
+CONFIGS=()   # "<run_name> <main.py flags>"; JSON must contain no spaces (word-split below)
+# Reference point: the original ENet baseline recipe, untuned.
+CONFIGS+=("enet_baseline --net enet --optimizer adam --lr 5e-4 --lr-scheduler none")
+for k in 16 32 64; do for lr in 2.5e-4 5e-4 1e-3; do
+    CONFIGS+=("unet_k${k}_lr${lr} --net unet --net_kwargs {\"kernels\":${k}} --optimizer adam --lr ${lr} --lr-scheduler polynomial")
+done; done
+for e in 24 48 96; do for lr in 1e-4 3e-4 1e-3; do
+    CONFIGS+=("swin_e${e}_lr${lr} --net swin_unet --net_kwargs {\"embed_dim\":${e}} --optimizer adamw --lr ${lr} --weight-decay 1e-2 --lr-scheduler polynomial")
+done; done
+
+N_CONFIGS=${#CONFIGS[@]}
+if [[ -z ${SLURM_ARRAY_TASK_ID:-} ]]; then
+    cd "$(dirname "$0")/.."   # repo root, which becomes SLURM_SUBMIT_DIR
+    mkdir -p jobs
+    echo ">>> ${N_CONFIGS} configs x ${#SEEDS[@]} seeds"
+    exec sbatch --array=1-$(( N_CONFIGS * ${#SEEDS[@]} )) "job_scripts/$(basename "$0")" "$@"
+fi
+
+# Tasks 1..N_CONFIGS run the first seed, the next N_CONFIGS the second seed, etc.
+i=$(( SLURM_ARRAY_TASK_ID - 1 ))
+SEED=${SEEDS[$(( i / N_CONFIGS ))]}
+read -r NAME ARGS <<< "${CONFIGS[$(( i % N_CONFIGS ))]}"
+DEST="results/segthor/${SWEEP}/${NAME}_s${SEED}"
+
+module purge
+module load 2025
+module load Anaconda3/2025.06-1
+
+cd "$SLURM_SUBMIT_DIR"
+source activate ai4mi
+
+echo ">>> ${NAME} (seed ${SEED}) -> ${DEST}"
+echo ">>> ${ARGS}"
+
+# ARGS is intentionally unquoted so it splits into separate flags.
+python -u main.py \
+    --dataset SEGTHOR \
+    --mode full \
+    --loss dicece \
+    --selection-metric dice3d \
+    --distance-metrics-at best \
+    --epochs 50 \
+    --patience 0 \
+    --seed "$SEED" \
+    --dest "$DEST" \
+    --gpu \
+    $ARGS
