@@ -23,13 +23,13 @@
 # SOFTWARE.
 
 import json
+import time
 import argparse
 import warnings
 from typing import Any, Callable
 from pathlib import Path
 from pprint import pprint
 from operator import itemgetter
-from shutil import copytree
 
 import torch
 import numpy as np
@@ -178,7 +178,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Any |
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=polynomial_decay)
 
     # Dataset part
-    B: int = params['B']
+    B: int = args.batch_size or params['B']  # dataset default unless overridden
     root_dir = Path("data") / args.dataset
 
     train_set = SliceDataset('train',
@@ -211,6 +211,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Any |
 
 def runTraining(args):
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
+    torch.manual_seed(args.seed)  # covers weight init and DataLoader shuffle order
     net, optimizer, device, train_loader, val_loader, K, scheduler = setup(args)
     losses = {'ce': CrossEntropy, 'dice': DiceLoss, 'dicece': DiceCELoss,
               'nswdicece': NSWDiceCELoss}
@@ -223,11 +224,14 @@ def runTraining(args):
         raise ValueError(args.mode, args.dataset)
 
     loss_fn = losses[args.loss](idk=idk)
+    start_time = time.time()
+    summary: dict = {}  # filled at each new best epoch
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
     log_loss_tra: Tensor = torch.zeros((args.epochs, len(train_loader)))
     log_dice_tra: Tensor = torch.zeros((args.epochs, len(train_loader.dataset), K))
     log_loss_val: Tensor = torch.zeros((args.epochs, len(val_loader)))
+    log_loss_terms: dict[str, dict[str, Tensor]] = {'train': {}, 'val': {}}  # Composite losses only (e.g. dicece)
     log_dice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
 
     # SegTHOR validation slices are named Patient_XX_ZZZZ.  The validation
@@ -277,6 +281,8 @@ def runTraining(args):
                     active_patient_id: str | None = None
                     active_patient_slices: list[tuple[int, Tensor, Tensor]] = []
                     completed_patients: set[str] = set()
+                    val_volumes: dict[str, list[tuple[int, Tensor, Tensor]]] = {}  # Kept for --distance-metrics-at best
+                    val_preds: list[tuple[Tensor, list[str]]] = []  # Written to disk only if this epoch is the best
 
             with cm():  # Either dummy context manager, or the torch.no_grad for validation
                 j = 0
@@ -301,6 +307,8 @@ def runTraining(args):
 
                     loss = loss_fn(pred_probs, gt)
                     log_loss[e, i] = loss.item()  # One loss value per batch (averaged in the loss)
+                    for name, term in getattr(loss_fn, 'terms', {}).items():
+                        log_loss_terms[m].setdefault(name, torch.zeros((args.epochs, len(loader))))[e, i] = term.item()
 
                     if opt:  # Only for training
                         loss.backward()
@@ -311,9 +319,7 @@ def runTraining(args):
                             warnings.filterwarnings('ignore', category=UserWarning)
                             predicted_class: Tensor = probs2class(pred_probs)
                             mult: int = 63 if K == 5 else (255 / (K - 1))
-                            save_images(predicted_class * mult,
-                                        data['stems'],
-                                        args.dest / f"iter{e:03d}" / m)
+                            val_preds.append(((predicted_class * mult).to(torch.uint8).cpu(), data['stems']))
 
                         if compute_3d_dice:
                             assert log_dice3d_val is not None
@@ -329,17 +335,14 @@ def runTraining(args):
                                     assert active_patient_id not in completed_patients
                                     record_volume_dice(log_dice3d_val, e, active_patient_id,
                                                        active_patient_slices, val_patient_indexes, K)
-                                    record_volume_surface_metrics(
-                                        log_hd95_val, log_hd_val, log_assd_val, e, active_patient_id,
-                                        active_patient_slices, val_patient_indexes, K, volume_spacing,
-                                    )
+                                    val_volumes[active_patient_id] = active_patient_slices
                                     completed_patients.add(active_patient_id)
                                     active_patient_id = patient_id
                                     active_patient_slices = []
 
                                 active_patient_slices.append((slice_id,
-                                                              pred_slice.detach().cpu(),
-                                                              gt_slice.detach().cpu()))
+                                                              pred_slice.detach().cpu().to(torch.uint8),
+                                                              gt_slice.detach().cpu().to(torch.uint8)))
 
                     j += B  # Keep in mind that _in theory_, each batch might have a different size
                     # For the DSC average: do not take the background class (0) into account:
@@ -359,18 +362,24 @@ def runTraining(args):
                 assert active_patient_id not in completed_patients
                 record_volume_dice(log_dice3d_val, e, active_patient_id,
                                    active_patient_slices, val_patient_indexes, K)
-                record_volume_surface_metrics(
-                    log_hd95_val, log_hd_val, log_assd_val, e, active_patient_id,
-                    active_patient_slices, val_patient_indexes, K, volume_spacing,
-                )
+                val_volumes[active_patient_id] = active_patient_slices
                 completed_patients.add(active_patient_id)
                 assert completed_patients == set(val_patient_indexes)
+                if args.distance_metrics_at == 'every-epoch':
+                    for patient_id, slices in val_volumes.items():
+                        record_volume_surface_metrics(
+                            log_hd95_val, log_hd_val, log_assd_val, e, patient_id,
+                            slices, val_patient_indexes, K, volume_spacing,
+                        )
 
         # Only the epochs actually run are saved, so early stopping (or a crash) does not
         # leave rows of zeros behind in the .npy files.
         np.save(args.dest / "loss_tra.npy", log_loss_tra[:e + 1])
         np.save(args.dest / "dice_tra.npy", log_dice_tra[:e + 1])
         np.save(args.dest / "loss_val.npy", log_loss_val[:e + 1])
+        for m, terms in log_loss_terms.items():
+            for name, log in terms.items():
+                np.save(args.dest / f"loss_{name}_{m[:3]}.npy", log[:e + 1])  # e.g. loss_ce_tra.npy
         np.save(args.dest / "dice_val.npy", log_dice_val[:e + 1])
         if log_dice3d_val is not None:
             np.save(args.dest / "dice3d_val.npy", log_dice3d_val[:e + 1])
@@ -394,6 +403,8 @@ def runTraining(args):
             hd = torch.nanmean(log_hd_val[e, :, 1:]).item()
         if log_assd_val is not None:
             assd = torch.nanmean(log_assd_val[e, :, 1:]).item()
+        if args.distance_metrics_at == 'best':  # Not computed yet: only for the best epoch, after training
+            hd95 = hd = assd = None
         if hd95 is not None and hd is not None and assd is not None:
             print(f">>> Validation 3D metrics at epoch {e}: Dice={dice3d:05.3f}, "
                   f"HD95={hd95:05.2f} mm, HD={hd:05.2f} mm, ASSD={assd:05.2f} mm")
@@ -441,9 +452,21 @@ def runTraining(args):
             with open(args.dest / "best_epoch.txt", 'w') as f:
                 f.write(message)
 
-            best_folder = args.dest / "best_epoch"
-            copytree(args.dest / f"iter{e:03d}", Path(best_folder), dirs_exist_ok=True)
+            # Per-class means (classes 1..K-1) over validation patients, for cross-run comparison.
+            summary = {'args': vars(args), 'best_epoch': e, 'selection_score': current_score,
+                       'elapsed_s': time.time() - start_time,
+                       'dice2d': log_dice_val[e, :, 1:].mean(0).tolist()}
+            for name, log in [('dice3d', log_dice3d_val), ('hd95', log_hd95_val),
+                              ('hd', log_hd_val), ('assd', log_assd_val)]:
+                if log is not None:
+                    summary[name] = torch.nanmean(log[e, :, 1:], dim=0).tolist()
+            with open(args.dest / "summary.json", 'w') as f:
+                json.dump(summary, f, indent=2, default=str)
 
+            for segs, stems in val_preds:
+                save_images(segs, stems, args.dest / "best_epoch" / "val")
+
+            best_val_volumes = val_volumes
             torch.save(net, args.dest / "bestmodel.pkl")
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
         else:
@@ -461,6 +484,26 @@ def runTraining(args):
 
         if scheduler is not None:
             scheduler.step()
+
+    if args.distance_metrics_at == 'best' and log_hd95_val is not None:
+        assert log_hd_val is not None and log_assd_val is not None
+        best_e: int = summary['best_epoch']
+        for patient_id, slices in best_val_volumes.items():
+            record_volume_surface_metrics(log_hd95_val, log_hd_val, log_assd_val, best_e, patient_id,
+                                          slices, val_patient_indexes, K, volume_spacing)
+        for name, log in [('hd95', log_hd95_val), ('hd', log_hd_val), ('assd', log_assd_val)]:
+            np.save(args.dest / f"{name}_val.npy", log[:e + 1])
+            summary[name] = torch.nanmean(log[best_e, :, 1:], dim=0).tolist()
+        print(f">>> Best epoch {best_e} 3D metrics: HD95={torch.nanmean(log_hd95_val[best_e, :, 1:]):05.2f} mm, "
+              f"HD={torch.nanmean(log_hd_val[best_e, :, 1:]):05.2f} mm, "
+              f"ASSD={torch.nanmean(log_assd_val[best_e, :, 1:]):05.2f} mm")
+
+    # elapsed_s is the time to the best epoch; record the full run too.
+    if summary:
+        summary['epochs_run'] = e + 1
+        summary['total_elapsed_s'] = time.time() - start_time
+        with open(args.dest / "summary.json", 'w') as f:
+            json.dump(summary, f, indent=2, default=str)
 
 
 def main():
@@ -484,6 +527,8 @@ def main():
     parser.add_argument('--adjacent_slices', default=0, type=int,
                         help="Adjacent slices on each side stacked as input channels: "
                              "0 is 2D, n > 0 is 2.5D with 2n+1 channels.")
+    parser.add_argument('--batch-size', type=int, default=None,
+                        help="Overrides the dataset default (SEGTHOR: 8, TOY2: 2).")
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
     parser.add_argument('--loss', default='ce', choices=['ce', 'dice', 'dicece', 'nswdicece'],
                         help="'nswdicece' pools the Dice term by Nash social welfare "
@@ -495,6 +540,9 @@ def main():
     parser.add_argument('--selection-aggregation', default='mean', choices=['mean', 'nsw'],
                     help='Aggregation across foreground classes for Dice selection. '
                          'NSW uses the geometric mean and is only valid for Dice metrics.')
+    parser.add_argument('--distance-metrics-at', default='every-epoch', choices=['every-epoch', 'best'],
+                        help='When to compute HD95/HD/ASSD (slow): every epoch, or once for the '
+                             'best epoch after training (other epochs stay NaN).')
     parser.add_argument('--optimizer', default='adam',
                         choices=['adam', 'adamw', 'sgd_nesterov'],
                         help='Optimizer to use. The default reproduces the original Adam baseline.')
@@ -508,6 +556,7 @@ def main():
                         help="Destination directory to save the results (predictions and weights).")
 
     parser.add_argument('--gpu', action='store_true')
+    parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
@@ -528,6 +577,10 @@ def main():
         parser.error('--adjacent_slices must be non-negative')
     if args.selection_aggregation == 'nsw' and args.selection_metric not in ['dice2d', 'dice3d']:
         parser.error('--selection-aggregation nsw is only available with dice2d or dice3d')
+    if args.batch_size is not None and args.batch_size <= 0:
+        parser.error('--batch-size must be positive')
+    if args.distance_metrics_at == 'best' and args.selection_metric in ['hd95', 'assd']:
+        parser.error(f'--selection-metric {args.selection_metric} needs --distance-metrics-at every-epoch')
 
     pprint(args)
 
