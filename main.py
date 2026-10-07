@@ -225,6 +225,7 @@ def runTraining(args):
 
     loss_fn = losses[args.loss](idk=idk)
     start_time = time.time()
+    summary: dict = {}  # filled at each new best epoch
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
     log_loss_tra: Tensor = torch.zeros((args.epochs, len(train_loader)))
@@ -493,11 +494,16 @@ def runTraining(args):
         for name, log in [('hd95', log_hd95_val), ('hd', log_hd_val), ('assd', log_assd_val)]:
             np.save(args.dest / f"{name}_val.npy", log[:e + 1])
             summary[name] = torch.nanmean(log[best_e, :, 1:], dim=0).tolist()
-        with open(args.dest / "summary.json", 'w') as f:
-            json.dump(summary, f, indent=2, default=str)
         print(f">>> Best epoch {best_e} 3D metrics: HD95={torch.nanmean(log_hd95_val[best_e, :, 1:]):05.2f} mm, "
               f"HD={torch.nanmean(log_hd_val[best_e, :, 1:]):05.2f} mm, "
               f"ASSD={torch.nanmean(log_assd_val[best_e, :, 1:]):05.2f} mm")
+
+    # elapsed_s is the time to the best epoch; record the full run too.
+    if summary:
+        summary['epochs_run'] = e + 1
+        summary['total_elapsed_s'] = time.time() - start_time
+        with open(args.dest / "summary.json", 'w') as f:
+            json.dump(summary, f, indent=2, default=str)
 
 
 def main():
