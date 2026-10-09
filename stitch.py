@@ -31,11 +31,35 @@ from typing import Match, Pattern
 
 import numpy as np
 import nibabel as nib
-from scipy.ndimage import zoom
+from scipy.ndimage import distance_transform_edt, zoom
+from scipy.ndimage import minimum as ndi_minimum
 from skimage.io import imread
+from skimage.measure import label
 from skimage.transform import resize
 
 from utils import crop_or_pad_arr, map_, tqdm_
+
+
+def keep_largest_component(
+        vol: np.ndarray, 
+        spacing: tuple[float, float, float], 
+        max_dist: float
+    ) -> np.ndarray:
+    # keep the largest blob per organ, plus the blobs within max_dist mm of it.
+    out = np.zeros_like(vol)
+    for c in range(1, 5):
+        labeled = label(vol == c)
+        if labeled.max() == 0:
+            continue # no organ c in this volume
+        sizes = np.bincount(labeled.ravel())[1:]  # [1:] drops the background count
+        largest_id = np.argmax(sizes) + 1
+
+        dist_to_largest = distance_transform_edt(labeled != largest_id, sampling=spacing)  # mm
+        blob_dist = np.asarray(ndi_minimum(dist_to_largest, labels=labeled, index=np.arange(1, len(sizes) + 1)))
+
+        keep = np.flatnonzero(blob_dist <= max_dist) + 1  # numbers of the blobs close enough
+        out[np.isin(labeled, keep)] = c
+    return out
 
 
 def get_z(image: Path) -> int:
@@ -44,7 +68,7 @@ def get_z(image: Path) -> int:
 
 def merge_patient(id_: str, dest_folder: str, images: list[Path],
                   idxes: list[int], K: int, source_pattern: str,
-                  stats: dict) -> None:
+                  stats: dict, lcc: bool = False, lcc_max_dist: float = 50.0) -> None:
     # print(source_pattern.format(id_=id_))
     orig_nib = nib.load(source_pattern.format(id_=id_))
     orig_shape = np.asarray(orig_nib.dataobj).shape
@@ -101,6 +125,9 @@ def merge_patient(id_: str, dest_folder: str, images: list[Path],
     res_arr //= 63  # For segthor only
     assert set(np.unique(res_arr)) == set(range(5)), np.uint8(res_arr)
 
+    if lcc:
+        res_arr = keep_largest_component(res_arr, spacing=(dx, dy, dz), max_dist=lcc_max_dist)
+
     new_nib = nib.nifti1.Nifti1Image(res_arr, affine=orig_nib.affine, header=orig_nib.header)
     nib.save(new_nib, (Path(dest_folder) / id_).with_suffix(".nii.gz"))
 
@@ -134,7 +161,7 @@ def main(args) -> None:
     args.dest_folder.mkdir(parents=True, exist_ok=True)
 
     for p in tqdm_(unique_patients):
-        merge_patient(p, args.dest_folder, images, idx_map[p], args.num_classes, args.source_scan_pattern, stats)
+        merge_patient(p, args.dest_folder, images, idx_map[p], args.num_classes, args.source_scan_pattern, stats, lcc=args.lcc, lcc_max_dist=args.lcc_max_dist)
     # mmap_(lambda p: merge_patient(p, args.dest_folder, images, idx_map[p], K=args.num_classes), patients)
 
 
@@ -148,6 +175,10 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--grp_regex', type=str, required=True)
 
     parser.add_argument('--num_classes', type=int, default=4)
+    parser.add_argument('--lcc', action='store_true',
+                        help="Per organ, keep the largest 3D connected component and the components near it")
+    parser.add_argument('--lcc_max_dist', type=float, default=50.0,
+                        help="With --lcc, components within this distance (mm) of the largest one are kept")
     parser.add_argument('--preprocess_stats', type=Path, required=True,
                         help="preprocess_stats.pkl saved by slice_segthor.py. This is used to go back to the original space")
 
