@@ -65,6 +65,7 @@ datasets_params: dict[str, dict[str, Any]] = {}
 # Avoids the classes with C (often used for the number of Channel)
 datasets_params["TOY2"] = {'K': 2, 'B': 2}
 datasets_params["SEGTHOR"] = {'K': 5, 'B': 8}
+datasets_params["SEGTHOR_ORIGINAL"] = {'K': 5, 'B': 8}
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'B': 8}
 
 # Network constructor, picked by --net. Defaults live in each class signature;

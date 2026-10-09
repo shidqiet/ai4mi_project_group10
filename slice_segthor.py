@@ -268,11 +268,13 @@ def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list
 
 def main(args: argparse.Namespace):
     src_path: Path = Path(args.source_dir)
-    dest_path: Path = Path(args.dest_dir)
+    dest_path: Path = Path(args.dest_dir)  # preprocessed slices, e.g. data/SEGTHOR
+    dest_original: Path = dest_path.with_name(dest_path.name + "_ORIGINAL")  # e.g. data/SEGTHOR_ORIGINAL
 
     # Assume the clean up is done before calling the script
     assert src_path.exists()
     assert not dest_path.exists()
+    assert not dest_original.exists()
 
     training_ids: list[str]
     validation_ids: list[str]
@@ -285,9 +287,9 @@ def main(args: argparse.Namespace):
     resolution_dict: dict[str, tuple[float, float, float]] = {}
 
     split_ids: list[str]
-    for subfolder, preprocess in [("original", False), ("preprocessed", True)]:
+    for dest_root, preprocess in [(dest_original, False), (dest_path, True)]:
         for mode, split_ids in zip(["train", "val"], [training_ids, validation_ids]):
-            dest_mode: Path = dest_path / subfolder / mode
+            dest_mode: Path = dest_root / mode
             print(f"Slicing {len(split_ids)} pairs to {dest_mode}")
 
             pfun: Callable = partial(slice_patient,
@@ -309,7 +311,7 @@ def main(args: argparse.Namespace):
                 case _ as p:
                     resolutions = Pool(p).map(pfun, iterator)
 
-            if subfolder == "preprocessed":
+            if preprocess:
                 for key, val in zip(split_ids, resolutions):
                     resolution_dict[key] = val
 
