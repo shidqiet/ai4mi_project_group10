@@ -188,10 +188,12 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Any |
                              debug=args.debug,
                              adjacent_slices=adjacent_slices,
                              augment=args.augment)  # Never augment val data
-    train_loader = DataLoader(train_set,
-                              batch_size=B,
-                              num_workers=5,
-                              shuffle=True)
+    if args.weighted_sampler:
+        from torch.utils.data import WeightedRandomSampler
+        sampler = WeightedRandomSampler(train_set.sample_weights(), num_samples=len(train_set), replacement=True)
+        train_loader = DataLoader(train_set, batch_size=B, num_workers=5, sampler=sampler)
+    else:
+        train_loader = DataLoader(train_set, batch_size=B, num_workers=5, shuffle=True)
 
     val_set = SliceDataset('val',
                            root_dir,
@@ -233,7 +235,8 @@ def runTraining(args):
     # SegTHOR validation slices are named Patient_XX_ZZZZ.  The validation
     # loader is not shuffled, so each patient's slices arrive consecutively
     # and can be accumulated one volume at a time.
-    compute_3d_dice: bool = args.dataset in ['SEGTHOR', 'SEGTHOR_CLEAN']
+    compute_3d_dice: bool = (args.dataset in ['SEGTHOR', 'SEGTHOR_CLEAN']
+                             and (Path("data") / args.dataset / "preprocess_stats.pkl").exists())
     if args.selection_metric in ['dice3d', 'hd95', 'assd'] and not compute_3d_dice:
         raise ValueError(f'--selection-metric {args.selection_metric} is only available for SegTHOR datasets')
     val_patient_indexes: dict[str, int] = {}
@@ -504,6 +507,8 @@ def main():
                         help='Learning-rate schedule. The default keeps the learning rate fixed.')
     parser.add_argument('--dest', type=Path, required=True,
                         help="Destination directory to save the results (predictions and weights).")
+    parser.add_argument('--weighted_sampler', action='store_true',
+                        help="Oversample slices with fg (2x) and esophagus (3x) to reduce pure-background batches.")
     parser.add_argument('--augment', action='store_true',
                         help="Apply augmentation to the training set only."
                              "Validation is never augmented.")

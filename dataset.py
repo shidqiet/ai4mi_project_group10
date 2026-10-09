@@ -155,10 +155,26 @@ class SliceDataset(Dataset):
         gt_cls = gt_tv.as_subclass(Tensor).long()
 
         # Convert gt back to one-hot
-        gt = torch.zeros(K, *gt_cls.shape, dtype=img.dtype)
+        gt = torch.zeros(K, *gt_cls.shape, dtype=torch.int64)
         gt.scatter_(0, gt_cls.unsqueeze(0), 1)
 
         return img, gt
+
+    def sample_weights(self, fg_weight: float = 2.0, eso_weight: float = 3.0) -> list[float]:
+        weights = []
+        for _, gt_path in self.files:
+            if gt_path is None:
+                weights.append(1.0)
+            else:
+                gt = Image.open(gt_path)
+                vals = set(gt.getdata())
+                if 189 in vals:  # esophagus
+                    weights.append(eso_weight) # weight for esophagus
+                elif gt.getextrema()[1] > 0:
+                    weights.append(fg_weight) # weight for any foreground class
+                else:
+                    weights.append(1.0) # weight for background only slices
+        return weights
 
     def __getitem__(self, index) -> dict[str, Union[Tensor, int, str]]:
         img_path, gt_path = self.files[index]
