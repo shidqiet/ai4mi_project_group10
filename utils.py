@@ -241,6 +241,11 @@ def surface_distance_metrics_binary(
         penalty = physical_volume_diagonal(pred_mask.shape, spacing)
         return (penalty, penalty, penalty)
 
+    # Crop to the bounding box of both masks: every surface voxel lies inside it, so the
+    # distances are unchanged, but the distance transforms run on far fewer voxels.
+    box = tuple(slice(idx.min(), idx.max() + 1) for idx in np.nonzero(pred_mask | gt_mask))
+    pred_mask, gt_mask = pred_mask[box], gt_mask[box]
+
     pred_surface = surface_voxels(pred_mask)
     gt_surface = surface_voxels(gt_mask)
     pred_to_gt = distance_transform_edt(~gt_surface, sampling=spacing)[pred_surface]
@@ -302,11 +307,10 @@ def union(a: Tensor, b: Tensor) -> Tensor:
     return res
 
 def nsw(scores: Tensor, dim: int = -1) -> Tensor:
-     """
-     Computes the geometric mean of the per organ Dice scores for each class.
+    """
+    Nash social welfare: the geometric mean of per-class scores along `dim`.
+    """
+    if scores.shape[dim] == 0:  #not an assert: must survive python -O
+        raise ValueError(f"nsw needs at least one score along dim {dim}, got shape {tuple(scores.shape)}")
 
-     """
-     if scores.shape[dim] == 0:
-          raise ValueError
-     
-     return torch.exp((torch.log(scores)).mean(dim))
+    return torch.exp(torch.log(scores).mean(dim))

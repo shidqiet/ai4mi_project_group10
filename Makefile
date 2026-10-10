@@ -25,9 +25,9 @@ data/segthor_part1: data/segthor_part1.zip
 	rm -f $@/.DS_STORE
 
 data/SEGTHOR:
-	$(info $(green)python $(CFLAGS) slice_segthor.py$(reset))
+	$(info $(green)python slice_segthor.py $(CFLAGS)$(reset))
 	rm -rf $@_tmp $@_tmp_ORIGINAL $@ $@_ORIGINAL
-	python $(CFLAGS) slice_segthor.py --source_dir data/segthor_part1 --dest_dir $@_tmp \
-		--shape 256 256 --retain 5
+	python slice_segthor.py $(CFLAGS) --source_dir data/segthor_train_full --dest_dir $@_tmp \
+		--shape 256 256 --retains 10 --seed 0 --fold 0
 	mv $@_tmp_ORIGINAL $@_ORIGINAL
 	mv $@_tmp $@
