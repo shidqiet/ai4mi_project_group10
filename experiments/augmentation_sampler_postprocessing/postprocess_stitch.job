@@ -1,0 +1,30 @@
+#!/bin/bash
+
+#SBATCH --partition=genoa
+#SBATCH --job-name=PPStitch
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=01:00:00
+#SBATCH --output=slurm_output_%A_%a.out
+#SBATCH --array=1-6
+
+module purge
+module load 2025
+module load Anaconda3/2025.06-1
+source activate ai4mi
+cd $HOME/ai4mi_project_group10
+
+# 1-3: augmentation run 1-3, 4-6: weighted_sampler run 1-3
+# LCC_MAX_DIST=50 keeps the largest component + components within 50 mm; 0 keeps the largest only
+LCC_MAX_DIST=50
+i=${SLURM_ARRAY_TASK_ID}
+if [ $i -le 3 ]; then CONFIG=augmentation; RUN=$i; else CONFIG=weighted_sampler; RUN=$((i - 3)); fi
+
+python stitch.py \
+    --data_folder results/${CONFIG}/unet_run${RUN}/best_epoch/val \
+    --dest_folder volumes/lcc${LCC_MAX_DIST}/${CONFIG}/unet_run${RUN} \
+    --num_classes 255 \
+    --grp_regex "(Patient_\d\d)_\d\d\d\d" \
+    --source_scan_pattern "data/segthor_train_full/train/{id_}/GT.nii.gz" \
+    --preprocess_stats data/SEGTHOR/preprocess_stats.pkl \
+    --lcc --lcc_max_dist ${LCC_MAX_DIST}
