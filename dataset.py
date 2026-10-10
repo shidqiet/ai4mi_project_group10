@@ -142,20 +142,19 @@ class SliceDataset(Dataset):
         img_tv = tv_tensors.Image(img)
         gt_tv = tv_tensors.Mask(gt_cls)
 
-        pipeline = v2.Compose([
-            v2.RandomAffine(degrees=(-10, 10), translate=(0.05, 0.05), scale=(0.9, 1.1),
-                            fill=0, interpolation=InterpolationMode.BILINEAR),
-            v2.ColorJitter(brightness=0.1),
-            v2.GaussianNoise(mean=0, sigma=0.02),
-        ])
-
-        img_tv, gt_tv = pipeline(img_tv, gt_tv)
-
+        # NOTE:
+        # Initially we use v2 pipeline but change to be able to accomdate adjacent slices
+        affine = v2.RandomAffine(degrees=(-10, 10), translate=(0.05, 0.05), scale=(0.9, 1.1),
+                                 fill=0, interpolation=InterpolationMode.BILINEAR)
+        img_tv, gt_tv = affine(img_tv, gt_tv)
         img = img_tv.as_subclass(Tensor)
+        img = (img * torch.empty(1).uniform_(0.9, 1.1)).clamp(0, 1)
+        img = v2.GaussianNoise(mean=0, sigma=0.02)(img)
+
         gt_cls = gt_tv.as_subclass(Tensor).long()
 
         # Convert gt back to one-hot
-        gt = torch.zeros(K, *gt_cls.shape, dtype=torch.int64)
+        gt = torch.zeros(K, *gt_cls.shape, dtype=torch.int32)
         gt.scatter_(0, gt_cls.unsqueeze(0), 1)
 
         return img, gt
@@ -168,7 +167,7 @@ class SliceDataset(Dataset):
             else:
                 gt = Image.open(gt_path)
                 vals = set(gt.getdata())
-                if 189 in vals:  # esophagus
+                if 63 in vals:  # esophagus
                     weights.append(eso_weight) # weight for esophagus
                 elif gt.getextrema()[1] > 0:
                     weights.append(fg_weight) # weight for any foreground class

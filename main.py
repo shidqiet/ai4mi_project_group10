@@ -533,8 +533,6 @@ def main():
         parser.error('--net_kwargs must be a JSON object')
     if args.adjacent_slices < 0:
         parser.error('--adjacent_slices must be non-negative')
-    if args.augment and args.adjacent_slices > 0:
-        parser.error('--augment is only supported for 2D (--adjacent_slices 0)')
     if args.selection_aggregation == 'nsw' and args.selection_metric not in ['dice2d', 'dice3d']:
         parser.error('--selection-aggregation nsw is only available with dice2d or dice3d')
 
