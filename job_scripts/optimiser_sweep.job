@@ -1,0 +1,83 @@
+#!/bin/bash
+#SBATCH --partition=gpu_a100
+#SBATCH --gpus=1
+#SBATCH --job-name=optimiser-sweep
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=18
+#SBATCH --time=07:00:00
+#SBATCH --output=jobs/%x_%A_%a.out
+
+# Run directly to submit the complete 28-run optimiser experiment:
+#   bash job_scripts/optimiser_sweep.job
+#
+# It includes the 18-configuration seed-0 screen, then seeds 1 and 2 for
+# the screen winner and the top two AdamW and Nesterov-SGD configurations.
+# Re-running the script writes to the existing result destinations.
+set -euo pipefail
+
+SWEEP=optimiser_sweep
+
+# UNet k32; DiceCE; polynomial scheduler. Learning rate is swept for every optimiser;
+# weight decay is restricted to no regularisation and a standard 1e-4 value.
+CONFIGS=()  # "<run_name> <main.py flags>"; JSON must contain no spaces.
+for optimizer in adam adamw; do
+    for lr in 2.5e-4 5e-4 1e-3; do
+        for wd in 0 1e-4; do
+            CONFIGS+=("unet_k32_${optimizer}_lr${lr}_wd${wd} --optimizer ${optimizer} --lr ${lr} --weight-decay ${wd}")
+        done
+    done
+done
+for lr in 3e-3 1e-2 3e-2; do
+    for wd in 0 1e-4; do
+        CONFIGS+=("unet_k32_sgd_nesterov_lr${lr}_wd${wd} --optimizer sgd_nesterov --lr ${lr} --weight-decay ${wd}")
+    done
+done
+
+TASKS=()  # "<run_name> <seed> <main.py flags>"
+for config in "${CONFIGS[@]}"; do
+    read -r NAME ARGS <<< "$config"
+    TASKS+=("${NAME} 0 ${ARGS}")
+    case "$NAME" in
+        unet_k32_adam_lr5e-4_wd1e-4|unet_k32_adamw_lr5e-4_wd0|unet_k32_adamw_lr1e-3_wd0|\
+        unet_k32_sgd_nesterov_lr3e-2_wd0|unet_k32_sgd_nesterov_lr3e-2_wd1e-4)
+            TASKS+=("${NAME} 1 ${ARGS}" "${NAME} 2 ${ARGS}")
+            ;;
+    esac
+done
+
+if [[ -z ${SLURM_ARRAY_TASK_ID:-} ]]; then
+    cd "$(dirname "$0")/.."
+    mkdir -p jobs
+    echo ">>> ${#TASKS[@]} runs: 18 seed-0 screen tasks + 10 confirmation tasks"
+    exec sbatch --array=1-${#TASKS[@]}%5 "job_scripts/$(basename "$0")"
+fi
+
+read -r NAME SEED ARGS <<< "${TASKS[$(( SLURM_ARRAY_TASK_ID - 1))]}"
+DEST="results/segthor/${SWEEP}/${NAME}_s${SEED}"
+
+module purge
+module load 2023
+module load PyTorch/2.1.2-foss-2023a-CUDA-12.1.1
+
+cd "$SLURM_SUBMIT_DIR"
+source .venv-ai4mi/bin/activate
+
+echo ">>> ${NAME} (seed ${SEED}) -> ${DEST}"
+echo ">>> ${ARGS}"
+
+# ARGS is intentionally unquoted so it splits into separate flags.
+python -u main.py \
+    --dataset SEGTHOR \
+    --net unet \
+    --net_kwargs '{"kernels":32}' \
+    --mode full \
+    --loss dicece \
+    --selection-metric dice3d \
+    --distance-metrics-at best \
+    --epochs 50 \
+    --patience 0 \
+    --lr-scheduler polynomial \
+    --seed "$SEED" \
+    --dest "$DEST" \
+    --gpu \
+    $ARGS
