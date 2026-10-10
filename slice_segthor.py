@@ -118,6 +118,18 @@ def norm_arr(
     return norm
 
 
+def norm_arr_simple(img: np.ndarray) -> np.ndarray:
+    casted = img.astype(np.float32)
+    shifted = casted - casted.min()
+    norm = shifted / shifted.max()
+    res = 255 * norm
+
+    assert 0 == res.min(), res.min()
+    assert res.max() == 255, res.max()
+
+    return res.astype(np.uint8)
+
+
 def clahe_arr(img: np.ndarray) -> np.ndarray:
     """
     3D CLAHE on the normalized [0, 1] image
@@ -162,6 +174,7 @@ def slice_patient(
     norm_stats: tuple[float, float],
     target_spacing: tuple[float, float, float],
     crop_size: int,
+    preprocess: bool = True,
     test_mode: bool = False,
 ) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
@@ -184,23 +197,26 @@ def slice_patient(
     else:
         gt = np.zeros_like(ct, dtype=np.uint8)
 
-    ct, gt = (
-        resample_arr(ct, nib_obj.header.get_zooms(), target_spacing, order=3), # cubic interpolation
-        resample_arr(gt, nib_obj.header.get_zooms(), target_spacing, order=0) # nearest neighbor interpolation
-    ) # both use nib_obj since ct and gt have same spacing.
+    if preprocess:
+        ct, gt = (
+            resample_arr(ct, nib_obj.header.get_zooms(), target_spacing, order=3), # cubic interpolation
+            resample_arr(gt, nib_obj.header.get_zooms(), target_spacing, order=0) # nearest neighbor interpolation
+        ) # both use nib_obj since ct and gt have same spacing.
 
-    # Make sure the final resize has the same scale for all patients
-    n_organ = (gt > 0).sum()
-    ct = crop_or_pad_arr(ct, (crop_size, crop_size), value=-1000) # pad with air
-    gt = crop_or_pad_arr(gt, (crop_size, crop_size), value=0)
-    assert (gt > 0).sum() == n_organ # the crop must not cut any organ
+        # Make sure the final resize has the same scale for all patients
+        n_organ = (gt > 0).sum()
+        ct = crop_or_pad_arr(ct, (crop_size, crop_size), value=-1000) # pad with air
+        gt = crop_or_pad_arr(gt, (crop_size, crop_size), value=0)
+        assert (gt > 0).sum() == n_organ # the crop must not cut any organ
 
-    x, y, z = ct.shape
-    norm_ct: np.ndarray = norm_arr(ct, norm_stats)
-    clahe_ct: np.ndarray = clahe_arr(norm_ct)
+        norm_ct: np.ndarray = norm_arr(ct, norm_stats)
+        clahe_ct: np.ndarray = clahe_arr(norm_ct)
+        to_slice_ct = (255 * clahe_ct).astype(np.uint8) # convert to uint8 for saving as png
+    else:
+        to_slice_ct = norm_arr_simple(ct)
 
-    to_slice_ct = (255 * clahe_ct).astype(np.uint8) # convert to uint8 for saving as png
     to_slice_gt = gt
+    x, y, z = to_slice_ct.shape
 
     for idz in range(z):
         img_slice = resize_(to_slice_ct[:, :, idz], shape).astype(np.uint8)
@@ -252,11 +268,13 @@ def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list
 
 def main(args: argparse.Namespace):
     src_path: Path = Path(args.source_dir)
-    dest_path: Path = Path(args.dest_dir)
+    dest_path: Path = Path(args.dest_dir)  # preprocessed slices, e.g. data/SEGTHOR
+    dest_original: Path = dest_path.with_name(dest_path.name + "_ORIGINAL")  # e.g. data/SEGTHOR_ORIGINAL
 
     # Assume the clean up is done before calling the script
     assert src_path.exists()
     assert not dest_path.exists()
+    assert not dest_original.exists()
 
     training_ids: list[str]
     validation_ids: list[str]
@@ -269,30 +287,33 @@ def main(args: argparse.Namespace):
     resolution_dict: dict[str, tuple[float, float, float]] = {}
 
     split_ids: list[str]
-    for mode, split_ids in zip(["train", "val"], [training_ids, validation_ids]):
-        dest_mode: Path = dest_path / mode
-        print(f"Slicing {len(split_ids)} pairs to {dest_mode}")
+    for dest_root, preprocess in [(dest_original, False), (dest_path, True)]:
+        for mode, split_ids in zip(["train", "val"], [training_ids, validation_ids]):
+            dest_mode: Path = dest_root / mode
+            print(f"Slicing {len(split_ids)} pairs to {dest_mode}")
 
-        pfun: Callable = partial(slice_patient,
-                                 dest_path=dest_mode,
-                                 source_path=src_path,
-                                 shape=tuple(args.shape),
-                                 norm_stats=norm_stats,
-                                 target_spacing=target_spacing,
-                                 crop_size=args.crop_size,
-                                 test_mode=mode == 'test')
-        resolutions: list[tuple[float, float, float]]
-        iterator = tqdm_(split_ids)
-        match args.process:
-            case 1:
-                resolutions = list(map(pfun, iterator))
-            case -1:
-                resolutions = Pool().map(pfun, iterator)
-            case _ as p:
-                resolutions = Pool(p).map(pfun, iterator)
+            pfun: Callable = partial(slice_patient,
+                                     dest_path=dest_mode,
+                                     source_path=src_path,
+                                     shape=tuple(args.shape),
+                                     norm_stats=norm_stats,
+                                     target_spacing=target_spacing,
+                                     crop_size=args.crop_size,
+                                     preprocess=preprocess,
+                                     test_mode=mode == 'test')
+            resolutions: list[tuple[float, float, float]]
+            iterator = tqdm_(split_ids)
+            match args.process:
+                case 1:
+                    resolutions = list(map(pfun, iterator))
+                case -1:
+                    resolutions = Pool().map(pfun, iterator)
+                case _ as p:
+                    resolutions = Pool(p).map(pfun, iterator)
 
-        for key, val in zip(split_ids, resolutions):
-            resolution_dict[key] = val
+            if preprocess:
+                for key, val in zip(split_ids, resolutions):
+                    resolution_dict[key] = val
 
     with open(dest_path / "spacing.pkl", 'wb') as f:
         pickle.dump(resolution_dict, f, pickle.HIGHEST_PROTOCOL)

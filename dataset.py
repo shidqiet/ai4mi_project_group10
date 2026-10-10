@@ -30,6 +30,8 @@ import torch
 from torch import Tensor
 from PIL import Image
 from torch.utils.data import Dataset
+from torchvision import tv_tensors
+from torchvision.transforms import InterpolationMode, v2
 
 
 def make_dataset(root, subset) -> list[tuple[Path, Path | None]]:
@@ -85,9 +87,17 @@ class SliceDataset(Dataset):
         adjacent_slices=0  -> 2D    img (1, W, H)
         adjacent_slices=n  -> 2.5D  img (2n+1, W, H), gt of the centre slice
     """
-    def __init__(self, subset, root_dir, img_transform=None,
-                 gt_transform=None, augment=False, equalize=False, debug=False,
-                 adjacent_slices: int = 0):
+    def __init__(
+        self,
+        subset,
+        root_dir,
+        img_transform=None,
+        gt_transform=None,
+        equalize=False,
+        debug=False,
+        augment=False,
+        adjacent_slices: int = 0,
+    ):
         self.root_dir: str = root_dir
         self.img_transform: Callable = img_transform
         self.gt_transform: Callable = gt_transform
@@ -123,6 +133,48 @@ class SliceDataset(Dataset):
         return [min(max(j, lo), hi)
                 for j in range(index - self.adjacent_slices, index + self.adjacent_slices + 1)]
 
+    def _augment(self, img: Tensor, gt: Tensor) -> tuple[Tensor, Tensor]:
+        K = gt.shape[0]
+
+        # Undo one-hot encoding
+        gt_cls = gt.argmax(dim=0).to(torch.uint8)
+
+        img_tv = tv_tensors.Image(img)
+        gt_tv = tv_tensors.Mask(gt_cls)
+
+        # NOTE:
+        # Initially we use v2 pipeline but change to be able to accomdate adjacent slices
+        affine = v2.RandomAffine(degrees=(-10, 10), translate=(0.05, 0.05), scale=(0.9, 1.1),
+                                 fill=0, interpolation=InterpolationMode.BILINEAR)
+        img_tv, gt_tv = affine(img_tv, gt_tv)
+        img = img_tv.as_subclass(Tensor)
+        img = (img * torch.empty(1).uniform_(0.9, 1.1)).clamp(0, 1)
+        img = v2.GaussianNoise(mean=0, sigma=0.02)(img)
+
+        gt_cls = gt_tv.as_subclass(Tensor).long()
+
+        # Convert gt back to one-hot
+        gt = torch.zeros(K, *gt_cls.shape, dtype=torch.int32)
+        gt.scatter_(0, gt_cls.unsqueeze(0), 1)
+
+        return img, gt
+
+    def sample_weights(self, fg_weight: float = 2.0, eso_weight: float = 3.0) -> list[float]:
+        weights = []
+        for _, gt_path in self.files:
+            if gt_path is None:
+                weights.append(1.0)
+            else:
+                gt = Image.open(gt_path)
+                vals = set(gt.getdata())
+                if 63 in vals:  # esophagus
+                    weights.append(eso_weight) # weight for esophagus
+                elif gt.getextrema()[1] > 0:
+                    weights.append(fg_weight) # weight for any foreground class
+                else:
+                    weights.append(1.0) # weight for background only slices
+        return weights
+
     def __getitem__(self, index) -> dict[str, Union[Tensor, int, str]]:
         img_path, gt_path = self.files[index]
         idxs: list[int] = self.window(index) if self.adjacent_slices else [index]
@@ -138,6 +190,10 @@ class SliceDataset(Dataset):
 
             assert gt.shape[1:] == img.shape[1:], (gt.shape, img.shape)
 
+            if self.augmentation:
+                img, gt = self._augment(img, gt)
+
+            data_dict["images"] = img
             data_dict["gts"] = gt
 
         return data_dict

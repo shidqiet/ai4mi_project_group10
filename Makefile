@@ -26,7 +26,8 @@ data/segthor_part1: data/segthor_part1.zip
 
 data/SEGTHOR:
 	$(info $(green)python slice_segthor.py $(CFLAGS)$(reset))
-	rm -rf $@_tmp $@
+	rm -rf $@_tmp $@_tmp_ORIGINAL $@ $@_ORIGINAL
 	python slice_segthor.py $(CFLAGS) --source_dir data/segthor_train_full --dest_dir $@_tmp \
 		--shape 256 256 --retains 10 --seed 0 --fold 0
+	mv $@_tmp_ORIGINAL $@_ORIGINAL
 	mv $@_tmp $@

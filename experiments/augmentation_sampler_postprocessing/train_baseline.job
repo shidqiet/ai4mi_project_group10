@@ -1,0 +1,25 @@
+#!/bin/bash
+
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=1
+#SBATCH --job-name=Baseline
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=9
+#SBATCH --time=04:00:00
+#SBATCH --output=slurm_output_%A_%a.out
+#SBATCH --array=1-3
+
+module purge
+module load 2025
+module load Anaconda3/2025.06-1
+source activate ai4mi
+cd $HOME/ai4mi_project_group10
+
+srun python main.py \
+    --dataset SEGTHOR_ORIGINAL \
+    --mode full \
+    --net enet \
+    --epochs 20 \
+    --patience 0 \
+    --dest results/baseline/enet_run${SLURM_ARRAY_TASK_ID} \
+    --gpu
