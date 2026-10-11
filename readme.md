@@ -29,6 +29,9 @@ Since the initial baseline, the project has gained:
   plus automatic plots, CSV/JSON summaries, and elapsed-time recording.
 - **Inference:** original-space NIfTI reconstruction and optional per-organ
   connected-component postprocessing.
+- **Final model and test inference:** training on all 40 patients without a
+  validation split, prediction on the unlabelled test scans, and validation
+  metrics in the submission format.
 - **Reproducible experiments:** Slurm templates, plotting scripts, and reports
   for architecture, ENet, loss, optimiser, 2.5D, augmentation,
   sampling, and postprocessing studies.
@@ -177,7 +180,7 @@ python -m ai4mi.training.main \
   --selection-metric dice3d \
   --distance-metrics-at best \
   --epochs 50 \
-  --augment
+  --augment \
   --patience 0 \
   --seed 0 \
   --gpu \
@@ -191,7 +194,7 @@ groups are:
 | --- | --- |
 | Dataset/model | `--dataset`, `--net`, `--net_kwargs`, `--adjacent_slices` |
 | Optimisation | `--optimizer`, `--lr`, `--weight-decay`, `--lr-scheduler`, `--batch-size` |
-| Duration | `--epochs`, `--patience`, `--min_delta`, `--seed` |
+| Duration | `--epochs`, `--patience`, `--min_delta`, `--seed`, `--no-val` |
 | Objective | `--loss`, `--mode`, `--weighted_sampler`, `--augment` |
 | Selection | `--selection-metric`, `--selection-aggregation`, `--distance-metrics-at` |
 
@@ -249,6 +252,94 @@ python -m ai4mi.inference.stitch \
 if it removes more than 10% of an organ. Omit `--preprocess_stats` when
 stitching `SEGTHOR_ORIGINAL` predictions.
 
+## Final model and test predictions
+
+The final model reuses the best configuration from the
+[best-config evaluation](docs/experiments/best_config_eval/best_config_report.md)
+but trains on all 40 patients. With no validation set, it trains for a fixed 50
+epochs and keeps the last-epoch weights.
+
+
+Slice all 40 patients into the training set (`--retains 0`). If the test data is present at tools/data/segthor_train_full/test/Patient_XX.nii.gz, it is sliced into tools/data/SEGTHOR_val0/test/ with the training set's preprocessing statistics:
+```bash
+python -m ai4mi.preprocessing.slice_segthor \
+  --source_dir tools/data/segthor_train_full \
+  --dest_dir tools/data/SEGTHOR_val0 \
+  --shape 256 256 \
+  --retains 0
+```
+
+To add the test scans to an existing `SEGTHOR_val0` later, rerun the same command
+with `--test_only`. That reuses its `preprocess_stats.pkl`, so the test slices
+match the training preprocessing.
+
+Train with `--no-val`, which skips validation, ignores `--patience` and
+`--selection-metric`, and writes `lastmodel.pkl` and `lastweights.pt`:
+
+```bash
+python -m ai4mi.training.main \
+  --dataset SEGTHOR_val0 \
+  --no-val \
+  --net unet \
+  --net_kwargs '{"kernels": 64}' \
+  --adjacent_slices 1 \
+  --mode full \
+  --loss dicece \
+  --optimizer adam \
+  --lr 2.5e-4 \
+  --weight-decay 1e-4 \
+  --lr-scheduler polynomial \
+  --augment \
+  --epochs 50 \
+  --seed 0 \
+  --gpu \
+  --dest results/segthor/final/unet_k64_s0
+```
+
+Predict the test slices (no ground truth), then stitch and postprocess them
+into original-space volumes:
+
+```bash
+python -m ai4mi.inference.predict \
+  --model results/segthor/final/unet_k64_s0/lastmodel.pkl \
+  --data_root tools/data/SEGTHOR_val0 \
+  --subset test \
+  --adjacent_slices 1 \
+  --dest results/segthor/final/unet_k64_s0/test \
+  --gpu
+
+python -m ai4mi.inference.stitch \
+  --data_folder results/segthor/final/unet_k64_s0/test \
+  --source_scan_pattern "tools/data/segthor_train_full/test/{id_}.nii.gz" \
+  --dest_folder volumes/segthor/final/unet_k64_s0 \
+  --grp_regex "(Patient_\d\d)_\d\d\d\d" \
+  --num_classes 255 \
+  --preprocess_stats tools/data/SEGTHOR_val0/preprocess_stats.pkl \
+  --lcc \
+  --lcc_max_dist 50
+```
+
+`--adjacent_slices` must match the value the model was trained with.
+
+Score stitched volumes that have ground truth (here, the validation patients)
+with 3D Dice, HD95, HD and ASSD per patient and organ:
+
+```bash
+python -m ai4mi.evaluation.evaluate_volumes \
+  --pred_folder volumes/segthor/unet_k64_25d_s0 \
+  --gt_pattern "tools/data/segthor_train_full/train/{id_}/GT.nii.gz" \
+  --dest results/segthor/unet_k64_25d_s0/eval \
+  --npz_dir results/segthor/unet_k64_25d_s0/eval
+```
+
+This writes `per_patient.csv` and `summary.json`. With `--npz_dir`, it also
+writes `dice.npz`, `hd95.npz`, `hd.npz` and `assd.npz`; each maps a patient ID to
+a per-class array, background included.
+
+[`tools/hpc/final_best_k64.job`](tools/hpc/final_best_k64.job) runs the training
+step. [`tools/hpc/submission.job`](tools/hpc/submission.job) runs prediction,
+stitching and evaluation, and assembles the submission folder.
+
 ## Experiments and HPC
 
 [`tools/hpc/`](tools/hpc/) contains Slurm templates for architecture, ENet,
@@ -265,6 +356,7 @@ Experiment reports and reproducible figures are versioned in
 - [optimiser sweep](docs/experiments/optimiser_sweep/optimiser_report.md)
 - [adjacent-slice sweep](docs/experiments/adj_sweep/adj_report.md)
 - [augmentation, sampling, and postprocessing](docs/experiments/augmentation_sampler_postprocessing/report.md)
+- [best-config evaluation](docs/experiments/best_config_eval/best_config_report.md)
 
 ## Development notes
 
