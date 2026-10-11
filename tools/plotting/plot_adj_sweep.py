@@ -180,7 +180,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--sweep", type=Path, default=Path("results/segthor/adj_sweep"))
     p.add_argument("--k64", type=Path, default=Path("results/segthor/adj_k64_sweep"))
-    p.add_argument("--data", type=Path, default=Path("data/SEGTHOR/val"))
+    p.add_argument("--data", type=Path, default=Path("tools/data/SEGTHOR/val"))
     p.add_argument("--out", type=Path, default=None, help="default: docs/experiments/<sweep name>")
     args = p.parse_args()
     out = args.out or Path("docs/experiments") / args.sweep.name

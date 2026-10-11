@@ -268,8 +268,8 @@ def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list
 
 def main(args: argparse.Namespace):
     src_path: Path = Path(args.source_dir)
-    dest_path: Path = Path(args.dest_dir)  # preprocessed slices, e.g. data/SEGTHOR
-    dest_original: Path = dest_path.with_name(dest_path.name + "_ORIGINAL")  # e.g. data/SEGTHOR_ORIGINAL
+    dest_path: Path = Path(args.dest_dir)  # preprocessed slices, e.g. tools/data/SEGTHOR
+    dest_original: Path = dest_path.with_name(dest_path.name + "_ORIGINAL")  # e.g. tools/data/SEGTHOR_ORIGINAL
 
     # Assume the clean up is done before calling the script
     assert src_path.exists()

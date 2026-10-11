@@ -1,8 +1,8 @@
-data/*
-!data/*.b3sum
-!data/*.sha256
-!data/checksums/
-!data/checksums/*.sha256
+/tools/data/*
+!/tools/data/*.b3sum
+!/tools/data/*.sha256
+!/tools/data/checksums/
+!/tools/data/checksums/*.sha256
 results/
 volumes/
 __pycache__/

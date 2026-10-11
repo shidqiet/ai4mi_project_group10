@@ -180,7 +180,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int, Any |
 
     # Dataset part
     B: int = args.batch_size or params['B']  # dataset default unless overridden
-    root_dir = Path("data") / args.dataset
+    root_dir = Path("tools/data") / args.dataset
 
     train_set = SliceDataset('train',
                              root_dir,
@@ -242,7 +242,7 @@ def runTraining(args):
     # loader is not shuffled, so each patient's slices arrive consecutively
     # and can be accumulated one volume at a time.
     compute_3d_dice: bool = (args.dataset in ['SEGTHOR', 'SEGTHOR_CLEAN']
-                             and (Path("data") / args.dataset / "preprocess_stats.pkl").exists())
+                             and (Path("tools/data") / args.dataset / "preprocess_stats.pkl").exists())
     if args.selection_metric in ['dice3d', 'hd95', 'assd'] and not compute_3d_dice:
         raise ValueError(f'--selection-metric {args.selection_metric} is only available for SegTHOR datasets')
     val_patient_indexes: dict[str, int] = {}
@@ -251,7 +251,7 @@ def runTraining(args):
     log_hd_val: Tensor | None = None
     log_assd_val: Tensor | None = None
     if compute_3d_dice:
-        volume_spacing = load_preprocessed_volume_spacing(Path("data") / args.dataset)
+        volume_spacing = load_preprocessed_volume_spacing(Path("tools/data") / args.dataset)
         val_patient_ids = sorted({parse_segthor_slice_stem(img_path.stem)[0]
                                   for img_path, _ in val_loader.dataset.files})
         val_patient_indexes = {patient_id: i for i, patient_id in enumerate(val_patient_ids)}

@@ -39,7 +39,7 @@ from scipy import ndimage as ndi
 from skimage.filters import sobel
 from skimage.segmentation import watershed
 
-ROOT = Path("data/...") #path to the original folder with the wrong data
+ROOT = Path("tools/data/...") # path to the original folder with the wrong data
 OUT = "GT_recovered.nii.gz"
 THRESHOLD = 4.0  # seed depth in mm
 OVERRIDES = {"Patient_15": 5.0}  # patients needing a deeper seed

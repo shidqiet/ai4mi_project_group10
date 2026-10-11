@@ -25,6 +25,6 @@ python -m ai4mi.inference.stitch \
     --dest_folder volumes/lcc${LCC_MAX_DIST}/${CONFIG}/unet_run${RUN} \
     --num_classes 255 \
     --grp_regex "(Patient_\d\d)_\d\d\d\d" \
-    --source_scan_pattern "data/segthor_train_full/train/{id_}/GT.nii.gz" \
-    --preprocess_stats data/SEGTHOR/preprocess_stats.pkl \
+    --source_scan_pattern "tools/data/segthor_train_full/train/{id_}/GT.nii.gz" \
+    --preprocess_stats tools/data/SEGTHOR/preprocess_stats.pkl \
     --lcc --lcc_max_dist ${LCC_MAX_DIST}

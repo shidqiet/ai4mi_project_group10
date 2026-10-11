@@ -131,7 +131,6 @@ unexplained configuration.
 ## Layout
 
 ```text
-data/                  Local datasets and versioned checksum files
 docs/                  Documentation, figures, and experiment reports
 src/ai4mi/             Installable Python package
   data/                Dataset loading
@@ -141,6 +140,7 @@ src/ai4mi/             Installable Python package
   inference/           2D-to-3D reconstruction
   evaluation/          Metric plotting and reporting
 tools/                 Data utilities, plots, HPC jobs, and viewer submodule
+  data/                Local datasets and versioned checksum files
 ```
 
 Generated data, results, Slurm logs, and local environments are ignored by
@@ -198,32 +198,32 @@ installing the same dependency through both Conda and pip.
 Generate the synthetic two-circles dataset for a quick local test:
 
 ```bash
-make data/TOY2
+make tools/data/TOY2
 ```
 
-This creates `data/TOY2/`. The legacy `data/TOY` Make target is not maintained;
-use `TOY2`.
+This creates `tools/data/TOY2/`. The legacy `tools/data/TOY` Make target is
+not maintained; use `TOY2`.
 
 ### Full SegTHOR training dataset
 
 Obtain the full SegTHOR training dataset through the
 [course-provided SegTHOR link](https://amsuni-my.sharepoint.com/:u:/g/personal/h_t_g_kervadec_uva_nl/IQBJLXRY5wedSYEuofqRtuylAWiiHp2ciems5XSCu3DFMkA?e=qa3Ujf)
-and extract it under `data/` so that the source scans are available at
-`data/segthor_train_full/`. The dataset is not versioned and requires the
-appropriate UvA access.
+and extract it under `tools/data/` so that the source scans are available at
+`tools/data/segthor_train_full/`. The dataset is not versioned and requires
+the appropriate UvA access.
 
 Once the full dataset is extracted, generate the slice datasets:
 
 ```bash
-make data/SEGTHOR
+make tools/data/SEGTHOR
 ```
 
 The latter command uses the standard deterministic 30/10 train/validation
 split, 256 × 256 in-plane shape, and seed 0. It creates:
 
-- `data/SEGTHOR/` — preprocessed slices and `preprocess_stats.pkl`, required
+- `tools/data/SEGTHOR/` — preprocessed slices and `preprocess_stats.pkl`, required
   to restore predictions to their original geometry.
-- `data/SEGTHOR_ORIGINAL/` — slices retaining original geometry.
+- `tools/data/SEGTHOR_ORIGINAL/` — slices retaining original geometry.
 
 Inspect all preprocessing options with:
 
@@ -311,8 +311,8 @@ Compare 2D predictions with the viewer submodule:
 
 ```bash
 python tools/vendor/viewer/viewer.py \
-  --img_source data/SEGTHOR/val/img \
-  data/SEGTHOR/val/gt \
+  --img_source tools/data/SEGTHOR/val/img \
+  tools/data/SEGTHOR/val/gt \
   results/segthor/unet_k64_25d_s0/best_epoch/val \
   -n 2 -C 5 \
   --remap "{63: 1, 126: 2, 189: 3, 252: 4}" \
@@ -329,11 +329,11 @@ Stitch preprocessed validation predictions into original-space NIfTI volumes:
 ```bash
 python -m ai4mi.inference.stitch \
   --data_folder results/segthor/unet_k64_25d_s0/best_epoch/val \
-  --source_scan_pattern "data/segthor_train_full/train/{id_}/GT.nii.gz" \
+  --source_scan_pattern "tools/data/segthor_train_full/train/{id_}/GT.nii.gz" \
   --dest_folder volumes/segthor/unet_k64_25d_s0 \
   --grp_regex "(Patient_\d\d)_\d\d\d\d" \
   --num_classes 255 \
-  --preprocess_stats data/SEGTHOR/preprocess_stats.pkl \
+  --preprocess_stats tools/data/SEGTHOR/preprocess_stats.pkl \
   --lcc
 ```
 
@@ -363,7 +363,7 @@ Experiment reports and reproducible figures are versioned in
 - Project code lives in `src/ai4mi/`; use module entry points rather than
   running source files by path.
 - `tools/plotting/` reproduces experiment figures, and checksum files live in
-  `data/checksums/`.
+  `tools/data/checksums/`.
 - See [`docs/git.md`](docs/git.md) for Git workflow guidance.
 - Run `git submodule update --init --recursive` after cloning or switching to a
   revision that changes the viewer submodule.
