@@ -67,6 +67,7 @@ datasets_params["TOY2"] = {'K': 2, 'B': 2}
 datasets_params["SEGTHOR"] = {'K': 5, 'B': 8}
 datasets_params["SEGTHOR_ORIGINAL"] = {'K': 5, 'B': 8}
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'B': 8}
+datasets_params["SEGTHOR_val0"] = {'K': 5, 'B': 8}  # All 40 patients in train, for --no-val
 
 # Network constructor, picked by --net. Defaults live in each class signature;
 # the baselines are pinned to their original settings. --net_kwargs overrides at runtime.
@@ -241,9 +242,10 @@ def runTraining(args):
     # SegTHOR validation slices are named Patient_XX_ZZZZ.  The validation
     # loader is not shuffled, so each patient's slices arrive consecutively
     # and can be accumulated one volume at a time.
-    compute_3d_dice: bool = (args.dataset in ['SEGTHOR', 'SEGTHOR_CLEAN']
+    compute_3d_dice: bool = (not args.no_val
+                             and args.dataset in ['SEGTHOR', 'SEGTHOR_CLEAN']
                              and (Path("data") / args.dataset / "preprocess_stats.pkl").exists())
-    if args.selection_metric in ['dice3d', 'hd95', 'assd'] and not compute_3d_dice:
+    if not args.no_val and args.selection_metric in ['dice3d', 'hd95', 'assd'] and not compute_3d_dice:
         raise ValueError(f'--selection-metric {args.selection_metric} is only available for SegTHOR datasets')
     val_patient_indexes: dict[str, int] = {}
     log_dice3d_val: Tensor | None = None
@@ -264,7 +266,7 @@ def runTraining(args):
     epochs_without_improvement: int = 0
 
     for e in range(args.epochs):
-        for m in ['train', 'val']:
+        for m in ['train'] if args.no_val else ['train', 'val']:
             match m:
                 case 'train':
                     net.train()
@@ -381,10 +383,21 @@ def runTraining(args):
         # leave rows of zeros behind in the .npy files.
         np.save(args.dest / "loss_tra.npy", log_loss_tra[:e + 1])
         np.save(args.dest / "dice_tra.npy", log_dice_tra[:e + 1])
-        np.save(args.dest / "loss_val.npy", log_loss_val[:e + 1])
         for m, terms in log_loss_terms.items():
             for name, log in terms.items():
                 np.save(args.dest / f"loss_{name}_{m[:3]}.npy", log[:e + 1])  # e.g. loss_ce_tra.npy
+
+        if args.no_val:  # Nothing to select on: keep the latest weights, trained for the fixed --epochs
+            torch.save(net, args.dest / "lastmodel.pkl")
+            torch.save(net.state_dict(), args.dest / "lastweights.pt")
+            summary = {'args': vars(args), 'last_epoch': e, 'elapsed_s': time.time() - start_time}
+            with open(args.dest / "summary.json", 'w') as f:
+                json.dump(summary, f, indent=2, default=str)
+            if scheduler is not None:
+                scheduler.step()
+            continue
+
+        np.save(args.dest / "loss_val.npy", log_loss_val[:e + 1])
         np.save(args.dest / "dice_val.npy", log_dice_val[:e + 1])
         if log_dice3d_val is not None:
             np.save(args.dest / "dice3d_val.npy", log_dice3d_val[:e + 1])
@@ -564,6 +577,10 @@ def main():
     parser.add_argument('--augment', action='store_true',
                         help="Apply augmentation to the training set only."
                              "Validation is never augmented.")
+    parser.add_argument('--no-val', action='store_true',
+                        help="Skip validation (e.g. SEGTHOR_val0, all patients in train): train for the "
+                             "fixed --epochs and keep the last-epoch weights (lastweights.pt). "
+                             "--patience and --selection-metric are ignored.")
 
     parser.add_argument('--gpu', action='store_true')
     parser.add_argument('--seed', type=int, default=0)
@@ -595,8 +612,9 @@ def main():
     pprint(args)
 
     runTraining(args)
-    from visualize_metrics import generate_report
-    generate_report(args.dest)
+    if not args.no_val:  # The report plots validation metrics
+        from visualize_metrics import generate_report
+        generate_report(args.dest)
 
 
 if __name__ == '__main__':
