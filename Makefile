@@ -7,27 +7,27 @@ cyan:=$(shell tput bold ; tput setaf 6)
 reset:=$(shell tput sgr0)
 
 
-data/TOY:
+tools/data/TOY:
 	python gen_toy.py --dest $@ -n 10 10 -wh 256 256 -r 50
 
-data/TOY2:
+tools/data/TOY2:
 	rm -rf $@_tmp $@
-	python gen_two_circles.py --dest $@_tmp -n 1000 100 -r 25 -wh 256 256
+	python tools/gen_two_circles.py --dest $@_tmp -n 1000 100 -r 25 -wh 256 256
 	mv $@_tmp $@
 
 
 # Extraction and slicing for Segthor
 ## Original one
-data/segthor_part1: data/segthor_part1.zip
+tools/data/segthor_part1: tools/data/segthor_part1.zip
 	$(info $(yellow)unzip $<$(reset))
-	sha256sum -c data/segthor_part1.sha256
+	sha256sum -c tools/data/checksums/segthor_part1.sha256
 	unzip -q $<
 	rm -f $@/.DS_STORE
 
-data/SEGTHOR:
-	$(info $(green)python slice_segthor.py $(CFLAGS)$(reset))
+tools/data/SEGTHOR:
+	$(info $(green)python -m ai4mi.preprocessing.slice_segthor $(CFLAGS)$(reset))
 	rm -rf $@_tmp $@_tmp_ORIGINAL $@ $@_ORIGINAL
-	python slice_segthor.py $(CFLAGS) --source_dir data/segthor_train_full --dest_dir $@_tmp \
+	python -m ai4mi.preprocessing.slice_segthor $(CFLAGS) --source_dir tools/data/segthor_train_full --dest_dir $@_tmp \
 		--shape 256 256 --retains 10 --seed 0 --fold 0
 	mv $@_tmp_ORIGINAL $@_ORIGINAL
 	mv $@_tmp $@
