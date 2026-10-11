@@ -24,7 +24,7 @@ done; done
 
 N_CONFIGS=${#CONFIGS[@]}
 if [[ -z ${SLURM_ARRAY_TASK_ID:-} ]]; then
-    cd "$(dirname "$0")/.."   # repo root, which becomes SLURM_SUBMIT_DIR
+    cd "$(dirname "$0")/../.."   # repo root, which becomes SLURM_SUBMIT_DIR
     mkdir -p jobs
     echo ">>> ${N_CONFIGS} configs x ${#SEEDS[@]} seeds"
     exec sbatch --array=1-$(( N_CONFIGS * ${#SEEDS[@]} )) "tools/hpc/$(basename "$0")" "$@"

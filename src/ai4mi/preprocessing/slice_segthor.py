@@ -266,7 +266,40 @@ def get_splits(src_path: Path, retains: int, fold: int) -> tuple[list[str], list
     return training_ids, validation_ids, test_ids
 
 
+def slice_test(args: argparse.Namespace) -> None:
+    """
+    Slice the test volumes (no GT) into <dest_dir>/test, with the preprocessing stats
+    of an already sliced train set, so test slices match what the model was trained on.
+    """
+    src_path: Path = Path(args.source_dir)
+    dest_path: Path = Path(args.dest_dir)
+    dest_test: Path = dest_path / "test"
+    assert (src_path / "test").exists()
+    assert not dest_test.exists()
+
+    with open(dest_path / "preprocess_stats.pkl", "rb") as f:
+        stats = pickle.load(f)
+    norm_stats = (stats["norm_stats"]["p_low"], stats["norm_stats"]["p_high"])
+    target_spacing = (stats["target_spacing"]["dx"], stats["target_spacing"]["dy"], stats["target_spacing"]["dz"])
+
+    test_ids: list[str] = sorted(map_(lambda p: Path(p.stem).stem, (src_path / 'test').glob('*.nii.gz')))
+    print(f"Slicing {len(test_ids)} test volumes to {dest_test} with the stats of {dest_path}")
+    pfun: Callable = partial(slice_patient,
+                             dest_path=dest_test,
+                             source_path=src_path,
+                             shape=tuple(args.shape),
+                             norm_stats=norm_stats,
+                             target_spacing=target_spacing,
+                             crop_size=stats["crop_size"],
+                             test_mode=True)
+    Pool(args.process if args.process > 0 else None).map(pfun, tqdm_(test_ids))
+
+
 def main(args: argparse.Namespace):
+    if args.test_only:
+        slice_test(args)
+        return
+
     src_path: Path = Path(args.source_dir)
     dest_path: Path = Path(args.dest_dir)  # preprocessed slices, e.g. tools/data/SEGTHOR
     dest_original: Path = dest_path.with_name(dest_path.name + "_ORIGINAL")  # e.g. tools/data/SEGTHOR_ORIGINAL
@@ -346,6 +379,9 @@ def get_args() -> argparse.Namespace:
     parser.add_argument('--fold', type=int, default=0)
     parser.add_argument('--process', '-p', type=int, default=1,
                         help="The number of cores to use for processing")
+    parser.add_argument('--test_only', action='store_true',
+                        help="Only slice <source_dir>/test into <dest_dir>/test, reusing the "
+                             "preprocess_stats.pkl already in <dest_dir>")
     args = parser.parse_args()
     random.seed(args.seed)
 

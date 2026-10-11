@@ -46,7 +46,7 @@ for config in "${CONFIGS[@]}"; do
 done
 
 if [[ -z ${SLURM_ARRAY_TASK_ID:-} ]]; then
-    cd "$(dirname "$0")/.."
+    cd "$(dirname "$0")/../.."
     mkdir -p jobs
     echo ">>> ${#TASKS[@]} runs: 18 seed-0 screen tasks + 10 confirmation tasks"
     exec sbatch --array=1-${#TASKS[@]}%5 "tools/hpc/$(basename "$0")"
