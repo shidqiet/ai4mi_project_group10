@@ -43,7 +43,7 @@ Summary of codebase (in PyTorch)
 * debug options and facilities (cpu version, "dummy" network, smaller datasets);
 * saving of predictions as `.png`;
 * log the 2D DSC and cross-entropy over time, with basic plotting;
-* tool to compare different segmentations (`viewer/viewer.py`).
+* tool to compare different segmentations (`tools/vendor/viewer/viewer.py`).
 
 **Some recurrent questions might be addressed here directly.** As such, it is expected that small change or additions to this readme to be made.
 
@@ -66,6 +66,7 @@ $ python -m venv ai4mi
 $ source ai4mi/bin/activate
 $ which python  # ensure this is not your system's python anymore
 $ python -m pip install -r requirements.txt
+$ python -m pip install -e .
 ```
 Conda is an alternative to pip, but is recommended not to mix `conda install` and `pip install`.
 
@@ -94,6 +95,7 @@ $ python -m pip install --upgrade pip
 
 # 4) From the repo folder, install dependencies with pip
 $ python -m pip install -r requirements.txt
+$ python -m pip install -e .
 ```
 
 Some common troubleshooting for windows users:
@@ -123,7 +125,7 @@ You can also create new conda environment in anaconda prompt
 
 <a id="getting-the-data"></a>
 ### Getting the data
-The synthetic dataset is generated randomly, whereas for Segthor it is required to put the file [`segthor_part1.zip`](https://amsuni-my.sharepoint.com/:u:/g/personal/h_t_g_kervadec_uva_nl/IQBJLXRY5wedSYEuofqRtuylAWiiHp2ciems5XSCu3DFMkA?e=qa3Ujf) (required a UvA account) in the `data/` folder. If the computer running it is powerful enough, the recipe for `data/SEGTHOR` can be modified in the [Makefile](Makefile) to enable multi-processing (`-p -1` option, see `python slice_segthor.py --help` or its code directly).
+The synthetic dataset is generated randomly, whereas for Segthor it is required to put the file [`segthor_part1.zip`](https://amsuni-my.sharepoint.com/:u:/g/personal/h_t_g_kervadec_uva_nl/IQBJLXRY5wedSYEuofqRtuylAWiiHp2ciems5XSCu3DFMkA?e=qa3Ujf) (required a UvA account) in the `data/` folder. If the computer running it is powerful enough, the recipe for `data/SEGTHOR` can be modified in the [Makefile](Makefile) to enable multi-processing (`-p -1` option; see `python -m ai4mi.preprocessing.slice_segthor --help`).
 ```
 $ make data/TOY2
 $ make data/SEGTHOR
@@ -133,14 +135,14 @@ $ make data/SEGTHOR
 For windows users, you can use the following instead
 ```
 $ rm -rf data/TOY2_tmp data/TOY2
-$ python gen_two_circles.py --dest data/TOY2_tmp -n 1000 100 -r 25 -wh 256 256
+$ python tools/gen_two_circles.py --dest data/TOY2_tmp -n 1000 100 -r 25 -wh 256 256
 $ mv data/TOY2_tmp data/TOY2
 
 $ sha256sum -c data/segthor_train.sha256
 $ unzip -q data/segthor_train.zip
 
 $ rm -rf data/SEGTHOR_tmp data/SEGTHOR
-$ python  slice_segthor.py --source_dir data/segthor_train --dest_dir data/SEGTHOR_tmp \
+$ python -m ai4mi.preprocessing.slice_segthor --source_dir data/segthor_train --dest_dir data/SEGTHOR_tmp \
          --shape 256 256 --retain 10
 $ mv data/SEGTHOR_tmp data/SEGTHOR
 ````
@@ -149,8 +151,8 @@ $ mv data/SEGTHOR_tmp data/SEGTHOR
 ### Training a base network
 Running a training
 ```
-$ python main.py --help
-usage: main.py [-h] [--epochs EPOCHS] [--dataset {TOY2,SEGTHOR}] [--mode {partial,full}] --dest DEST [--gpu] [--debug]
+$ python -m ai4mi.training.main --help
+usage: python -m ai4mi.training.main [-h] [--epochs EPOCHS] [--dataset {TOY2,SEGTHOR}] [--mode {partial,full}] --dest DEST [--gpu] [--debug]
 
 options:
   -h, --help            show this help message and exit
@@ -160,30 +162,30 @@ options:
   --dest DEST           Destination directory to save the results (predictions and weights).
   --gpu
   --debug               Keep only a fraction (10 samples) of the datasets, to test the logic around epochs and logging easily.
-$ python main.py --dataset TOY2 --mode full --epoch 25 --dest results/toy2/ce --gpu
+$ python -m ai4mi.training.main --dataset TOY2 --mode full --epoch 25 --dest results/toy2/ce --gpu
 ```
 
 The codebase uses a lot of assertions for control and self-documentation, they can easily be disabled with the `-O` option (for faster training) once everything is known to be correct (for instance run the previous command for 1/2 epochs, then kill it and relaunch it):
 ```
-$ python -O main.py --dataset TOY2 --mode full --epoch 25 --dest results/toy2/ce --gpu
+$ python -O -m ai4mi.training.main --dataset TOY2 --mode full --epoch 25 --dest results/toy2/ce --gpu
 ```
 
 <a id="viewing-the-results"></a>
 ### Viewing the results
 <a id="2d-viewer"></a>
 #### 2D viewer
-Comparing some predictions with the provided [viewer](viewer/viewer.py) (right-click to go to the next set of images, left-click to go back):
+Comparing some predictions with the provided [viewer](tools/vendor/viewer/viewer.py) (right-click to go to the next set of images, left-click to go back):
 ```
-$ python viewer/viewer.py --img_source data/TOY2/val/img \
+$ python tools/vendor/viewer/viewer.py --img_source data/TOY2/val/img \
     data/TOY2/val/gt results/toy2/ce/iter000/val results/toy2/ce/iter005/val results/toy2/ce/best_epoch/val \
     --show_img -C 256 --no_contour
 ```
-![Example of the viewer on the TOY example](viewer_toy.png)
+![Example of the viewer on the TOY example](docs/assets/viewer_toy.png)
 **Note:** if using it from a SSH session, it requires X to be forwarded ([Unix/BSD](https://man.archlinux.org/man/ssh.1#X), [Windows](https://mobaxterm.mobatek.net/documentation.html#1_4)) for it to work. Note that X forwarding also needs to be enabled on the server side.
 
 
 ```
-$ python viewer/viewer.py --img_source data/SEGTHOR/val/img \
+$ python tools/vendor/viewer/viewer.py --img_source data/SEGTHOR/val/img \
     data/SEGTHOR/val/gt results/segthor/ce/iter000/val results/segthor/ce/best_epoch/val \
     -n 2 -C 5 --remap "{63: 1, 126: 2, 189: 3, 252: 4}" \
     --legend --class_names background esophagus heart trachea aorta
@@ -195,25 +197,25 @@ $ python viewer/viewer.py --img_source data/SEGTHOR/val/img \
 To look at the results in 3D, it is necessary to reconstruct the 3D volume from the individual 2D predictions saved as images.
 To stitch the `.png` back to a nifti file:
 ```
-$ python stitch.py --data_folder results/segthor/ce/best_epoch/val \
+$ python -m ai4mi.inference.stitch --data_folder results/segthor/ce/best_epoch/val \
     --dest_folder volumes/segthor/ce \
     --num_classes 255 --grp_regex "(Patient_\d\d)_\d\d\d\d" \
     --source_scan_pattern "data/segthor_train/train/{id_}/GT.nii.gz"
 ```
 
 [3D Slicer](https://www.slicer.org/) and [ITK Snap](http://www.itksnap.org) are two popular viewers for medical data, here comparing `GT.nii.gz` and the corresponding stitched prediction `Patient_01.nii.gz`:
-![Viewing label and prediction](3dslicer.png)
+![Viewing label and prediction](docs/assets/3dslicer.png)
 
 Zooming on the prediction with smoothing disabled:
-![Viewing the prediction without smoothing](3dslicer_zoom.png)
+![Viewing the prediction without smoothing](docs/assets/3dslicer_zoom.png)
 
 
 <a id="plotting-the-metrics"></a>
 ### Plotting the metrics
-There are some facilities to plot the metrics saved by [`main.py`](main.py):
+There are some facilities to plot the metrics saved by [`ai4mi.training.main`](src/ai4mi/training/main.py):
 ```
-$ python plot.py --help
-usage: plot.py [-h] --metric_file METRIC_MODE.npy [--dest METRIC_MODE.png] [--headless]
+$ python -m ai4mi.evaluation.plot --help
+usage: python -m ai4mi.evaluation.plot [-h] --metric_file METRIC_MODE.npy [--dest METRIC_MODE.png] [--headless]
 
 Plot data over time
 
@@ -224,14 +226,14 @@ options:
   --dest METRIC_MODE.png
                         Optional: save the plot to a .png file
   --headless            Does not display the plot and save it directly (implies --dest to be provided.
-$ python plot.py --metric_file results/segthor/ce/dice_val.npy --dest results/segthor/ce/dice_val.png
+$ python -m ai4mi.evaluation.plot --metric_file results/segthor/ce/dice_val.npy --dest results/segthor/ce/dice_val.png
 ```
-![Validation DSC](dice_val.png)
+![Validation DSC](docs/assets/dice_val.png)
 
 For SegTHOR, training also saves `dice3d_val.npy`. It contains hard Dice per
 epoch, validation patient, and class, computed by aggregating all of a
 patient's preprocessed 2D slices into a volume. Use `--selection-metric dice3d`
-with `main.py` to select the checkpoint with the highest mean foreground 3D
+with `ai4mi.training.main` to select the checkpoint with the highest mean foreground 3D
 validation Dice; the default `dice2d` preserves the original slice-level
 selection behaviour.
 
@@ -304,12 +306,12 @@ Groups will have to submit:
     * inference;
     * metrics computation/scripts to run the metrics submodule;
 * the best trained model;
-* predictions on the test set (`sha256sum -c data/test.zip.sha256` as optional checksum);
+* predictions on the test set (`sha256sum -c data/checksums/test.zip.sha256` as optional checksum);
 * predictions on the group's internal validation set, the labels of their validation set, and the metrics they computed (akin to Assignment 3).
 
 The main criterions for scoring will include (listed here only for convenience, please see Canvas for reference rubric):
 * improvement or lack thereof of performances over baseline;
-* code quality/clear [git use](git.md);
+* code quality/clear [git use](docs/git.md);
 * the [final choice of metrics](https://metrics-reloaded.dkfz.de/) (they need to be in 3D);
 * correctness of the computed metrics (on the validation set);
 * oral presentation.

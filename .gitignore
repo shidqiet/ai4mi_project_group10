@@ -1,10 +1,10 @@
 data/*
 !data/*.b3sum
 !data/*.sha256
+!data/checksums/
+!data/checksums/*.sha256
 results/
 volumes/
-ai4mi/
-.venv/
 __pycache__/
 projects
 jobs/*
