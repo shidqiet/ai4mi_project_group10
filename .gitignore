@@ -8,3 +8,4 @@ volumes/
 __pycache__/
 projects
 jobs/*
+*.egg-info/

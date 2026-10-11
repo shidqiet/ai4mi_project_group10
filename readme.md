@@ -161,7 +161,7 @@ Append `--gpu` only if the active PyTorch installation can access CUDA.
 
 ### SegTHOR example
 
-This representative full-supervision 2.5D U-Net run selects by mean 3D Dice:
+This representative 2.5D U-Net run selects by mean 3D Dice:
 
 ```bash
 python -m ai4mi.training.main \
@@ -177,6 +177,7 @@ python -m ai4mi.training.main \
   --selection-metric dice3d \
   --distance-metrics-at best \
   --epochs 50 \
+  --augment
   --patience 0 \
   --seed 0 \
   --gpu \
