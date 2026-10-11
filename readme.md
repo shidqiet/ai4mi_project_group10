@@ -15,118 +15,27 @@ Kervadec and is a fork of the
 Since the initial baseline, the project has gained:
 
 - **SegTHOR preprocessing:** percentile-based CT clipping, 3D CLAHE, common
-  spacing resampling, fixed field-of-view crop/pad handling, and both
-  preprocessed and original-space slice datasets.
-- **Architectures:** ShallowNet, ENet, U-Net, and Swin-UNet; U-Net supports
-  2D and neighbouring-slice 2.5D input.
-- **Training controls:** configurable architecture settings, seed and batch
+  spacing resampling, fixed field-of-view crop/pad handling.
+- **Architectures:** U-Net, and Swin-UNet.
+- **Support for 2.5D input**: adjacent slices can be passed to the network. Architecture-agnostic. Prediction is performed only for the central slice.
+- **Training controls:** configurable architecture settings through CLI, seed and batch
   size, Adam/AdamW/Nesterov SGD, polynomial scheduling, early stopping,
-  weighted foreground sampling, and consistent 2.5D augmentation.
+  weighted foreground sampling.  
+
+- **Data augmentation:** optional training-only random affine transforms, intensity scaling, and Gaussian noise, applied consistently across adjacent slices and the mask.
 - **Losses and selection:** CE, Dice, DiceCE, and NSW DiceCE; model selection
-  by 2D Dice, 3D Dice, HD95, or ASSD.
+  by 2D Dice, 3D Dice (organ mean or NSW), HD95, or ASSD.
 - **Volume evaluation:** per-patient/per-organ 3D Dice, HD95, HD, and ASSD,
   plus automatic plots, CSV/JSON summaries, and elapsed-time recording.
 - **Inference:** original-space NIfTI reconstruction and optional per-organ
   connected-component postprocessing.
 - **Reproducible experiments:** Slurm templates, plotting scripts, and reports
-  for architecture, ENet, loss, optimiser, adjacent-slice, augmentation,
+  for architecture, ENet, loss, optimiser, 2.5D, augmentation,
   sampling, and postprocessing studies.
 
 Detailed methodology and results are in [`docs/experiments/`](docs/experiments/).
 
-## Development timeline
 
-This timeline records the substantive work merged to `origin/master` after the
-project moved beyond Hoel Kervadec's teaching baseline. Dates are commit dates.
-It describes the implementation path, not just the resulting command-line options.
-
-### 13–16 September — make training configurable and introduce Dice objectives
-
-The first training changes added AdamW and Nesterov SGD alongside the existing
-Adam optimiser, plus polynomial learning-rate decay. These were exposed as
-training arguments so later runs could compare optimiser/schedule combinations
-without modifying the loop. Dice loss and combined Dice–cross-entropy support
-followed, including repair of the aorta label in the merged SegTHOR masks and a
-`--loss` selector in the training entry point. This established alternatives to
-the original cross-entropy-only baseline.
-
-### 17–21 September — build a geometry-aware SegTHOR pipeline
-
-Exploratory checks of Hounsfield-unit and voxel-spacing distributions informed
-the preprocessing design. The slicer clips CT intensities to robust
-percentiles, applies 3D CLAHE, and resamples both CT and ground truth to the
-dataset's median spacing before producing PNG slices. It saves the original
-geometry and preprocessing statistics while doing so.
-
-Those saved statistics are crucial: stitching first reverses the resize and
-crop/pad operations, then resamples the prediction back into the original NIfTI
-space. Fixed-size centre crop/pad was added to give models a consistent
-in-plane field of view, with the inverse operation added to stitching at the
-same time. This phase also added Swin-UNet and a U-Net implementation that can
-operate in 2D or 2.5D: neighbouring slices are stacked as input channels rather
-than processed as an independent 3D volume.
-
-### 27 September–1 October — evaluate the 3D clinical object, not only slices
-
-Validation was extended from slice-wise Dice to per-patient reconstructed
-volumes. The training loop collects validation slices by patient, reconstructs
-each volume, and calculates foreground 3D Dice. It then added spacing-aware
-surface metrics—HD95, full HD, and ASSD—using shared directed surface-distance
-calculations. The saved preprocessing spacing makes those distances meaningful
-in millimetres rather than pixels.
-
-Checkpoints can now be selected by 2D Dice, 3D Dice, HD95, or ASSD; Dice scores
-are maximised while distances are minimised. Early stopping was added on the
-selected validation metric, and the default epoch cap became 50.
-
-### 2–4 October — make fairness across organs visible and selectable
-
-The Nash social welfare (NSW) aggregator was introduced to avoid a high average
-Dice concealing a poorly segmented organ. For positive per-organ scores it uses
-the geometric mean; in the loss it is implemented in log form for numerical
-stability. `NSWDiceCELoss` combines that pooled Dice term with cross-entropy.
-NSW can also aggregate Dice for model selection.
-
-This feature was paired with automatic metric reporting: foreground curves,
-per-organ plots, selected-epoch patient distributions, heatmaps, correlations,
-and CSV summaries. Seeds and batch-size overrides were added so comparisons are
-repeatable and practical, and plot label handling was corrected.
-
-### 5–7 October — make richer evaluation affordable and reproducible
-
-Computing volume metrics every epoch can be expensive. Distance calculations
-were reduced to a bounding box around the relevant masks, and
-`--distance-metrics-at best` was added to defer HD95/HD/ASSD until the selected
-epoch when appropriate. Validation PNGs are likewise retained for the best
-epoch only. Compound-loss terms and total wall-clock time are recorded in run
-artifacts, making sweep results easier to audit.
-
-The same period added Slurm array-job templates and figure-generation scripts
-for architecture and ENet sweeps, followed by their reports. The preprocessing
-script was extended to emit both preprocessed and original-space variants,
-while augmentation added rotations, translations, scaling, brightness changes,
-and noise to training data only.
-
-### 8–10 October — consolidate the experimental recipe and improve robustness
-
-The SegTHOR split was fixed to the 30/10 patient recipe used across the
-experiments. A weighted random sampler then increased the frequency of
-foreground and particularly esophagus-containing slices, addressing the
-background-heavy training distribution.
-
-2.5D augmentation was first blocked because independent transformations of
-neighbouring slices would destroy their spatial correspondence; it was then
-implemented correctly by sampling one transform and applying it consistently
-to every slice in the 2.5D input. The final inference improvements added
-per-organ 3D postprocessing: keep the largest connected component and nearby
-components within a physical-distance threshold, while warning if more than
-10% of an organ is removed. Stitching original-space slices no longer requires
-preprocessing statistics because no inverse resampling is needed.
-
-This phase also completed the adjacent-slice, DiceCE-vs-NSW, optimiser, and
-augmentation/sampling/postprocessing reports. Together, the reports document
-how the final experimental choices were tested rather than presenting a single
-unexplained configuration.
 
 ## Layout
 
@@ -218,7 +127,7 @@ Once the full dataset is extracted, generate the slice datasets:
 make tools/data/SEGTHOR
 ```
 
-The latter command uses the standard deterministic 30/10 train/validation
+The latter command uses a deterministic 30/10 train/validation
 split, 256 × 256 in-plane shape, and seed 0. It creates:
 
 - `tools/data/SEGTHOR/` — preprocessed slices and `preprocess_stats.pkl`, required
@@ -231,8 +140,6 @@ Inspect all preprocessing options with:
 python -m ai4mi.preprocessing.slice_segthor --help
 ```
 
-For direct preprocessing, use a temporary output directory and rename it only
-after success; `--process -1` uses all available CPU cores.
 
 ## Train
 
@@ -287,10 +194,10 @@ groups are:
 | Objective | `--loss`, `--mode`, `--weighted_sampler`, `--augment` |
 | Selection | `--selection-metric`, `--selection-aggregation`, `--distance-metrics-at` |
 
-`--adjacent_slices 0` is 2D; a positive value supplies 2n + 1 slices. Dice is
+`--adjacent_slices 0` is 2D; a positive value supplies 2n + 1 slices. For`selection-metric` Dice is
 maximised, whereas HD95 and ASSD are minimised. Distance calculations are
-expensive: `--distance-metrics-at best` calculates them only at the selected
-epoch and cannot be used if HD95 or ASSD selects the checkpoint.
+expensive: `--distance-metrics-at best` calculates them only at  the end, for the best
+epoch, and cannot be used if HD95 or ASSD selects the checkpoint.
 
 Each run writes `bestweights.pt`, `bestmodel.pkl`, `best_epoch.txt`,
 `summary.json`, validation predictions, NumPy metric arrays, and automatic
@@ -364,7 +271,7 @@ Experiment reports and reproducible figures are versioned in
   running source files by path.
 - `tools/plotting/` reproduces experiment figures, and checksum files live in
   `tools/data/checksums/`.
-- See [`docs/git.md`](docs/git.md) for Git workflow guidance.
+-  [`docs/git.md`](docs/git.md) contains  Git workflow guidance as given by the course.
 - Run `git submodule update --init --recursive` after cloning or switching to a
   revision that changes the viewer submodule.
 
